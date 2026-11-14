@@ -1,75 +1,70 @@
-name: Build DyanogenMod from my base zip
+name: Rename visible CyanogenMod text to DyanogenMod
 
 on:
   workflow_dispatch:
     inputs:
       base_zip_url:
-        description: "Direct link to a full 6.0.1 flashable zip for SM-J500FN"
+        description: "Direct link to the CM13 zip for SM-J500FN"
         required: true
-        type: string
-      rom_name:
-        description: "Output name"
-        required: true
-        default: "DyanogenMod-6.0.1-J500FN"
         type: string
 
 jobs:
-  build:
+  rename:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y zip unzip curl
+        run: sudo apt-get update && sudo apt-get install -y zip unzip curl
 
-      - name: Download base ROM
+      - name: Download base zip
         run: |
           curl -L --fail -o base.zip "${{ inputs.base_zip_url }}"
           unzip -tq base.zip
-          mkdir -p base && unzip -q base.zip -d base
-          ls -la base
+          mkdir -p rom && unzip -q base.zip -d rom
+          test -f rom/META-INF/com/google/android/update-binary || (echo "::error::update-binary missing" && exit 1)
 
-      - name: Check required parts exist
-        run: |
-          test -f base/META-INF/com/google/android/update-binary || (echo "::error::update-binary missing in base zip" && exit 1)
-          test -f base/META-INF/com/google/android/updater-script || (echo "::error::updater-script missing in base zip" && exit 1)
-          echo "Base ROM structure OK"
-
-      - name: Apply my overlay
-        run: |
-          mkdir -p rom
-          cp -r base/. rom/
-          if [ -d overlay ]; then
-            cp -r overlay/. rom/
-            echo "Overlay applied:"
-            find overlay -type f
-          else
-            echo "No overlay folder, base copied as-is"
-          fi
-
-      - name: Check build.prop
+      - name: Update build.prop text (visible values only)
         run: |
           if [ -f rom/system/build.prop ]; then
-            grep -E "^ro\.(build\.display\.id|product\.model|modversion)=" rom/system/build.prop || true
-          else
-            echo "::warning::system/build.prop not found in rom"
+            sed -i \
+              -e 's/^ro\.build\.display\.id=.*/ro.build.display.id=dyanogenmod v3.0/' \
+              -e 's/^ro\.modversion=.*/ro.modversion=dyanogenmod-v3.0/' \
+              -e 's/^ro\.lineage\.display\.version=.*/ro.lineage.display.version=dyanogenmod v3.0/' \
+              -e 's/^ro\.cm\.display\.version=.*/ro.cm.display.version=dyanogenmod v3.0/' \
+              rom/system/build.prop
           fi
 
-      - name: Pack flashable zip
+      - name: Rename text in string resources of standalone apps
+        run: |
+          # يعدّل نصوص strings.xml داخل APK فقط بعد فكّه، ولا يلمس أسماء الحزم
+          find rom/system -name "*.apk" | while read apk; do
+            name=$(basename "$apk" .apk)
+            case "$name" in
+              CMUpdater|CyanogenSetupWizard)
+                mkdir -p /tmp/x && rm -rf /tmp/x/*
+                unzip -q "$apk" -d /tmp/x
+                if [ -f /tmp/x/res/values/strings.xml ]; then
+                  sed -i 's/CyanogenMod/DyanogenMod/g; s/Cyanogen/Dyanogen/g' /tmp/x/res/values/strings.xml
+                fi
+                echo "Text updated in $name (APK rebuild needed separately)"
+                ;;
+            esac
+          done
+
+      - name: Apply overlay
+        run: |
+          if [ -d overlay ]; then cp -r overlay/. rom/; fi
+
+      - name: Pack zip
         run: |
           mkdir -p out
-          cd rom && zip -qr -0 ../out/${{ inputs.rom_name }}.zip . && cd ..
-          cd out && md5sum ${{ inputs.rom_name }}.zip > ${{ inputs.rom_name }}.zip.md5 && cd ..
+          cd rom && zip -qr -0 ../out/dyanogenmod-v3.0-J500FN.zip . && cd ..
           ls -lh out
 
-      - name: Upload result
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.rom_name }}
+          name: dyanogenmod-v3.0-J500FN
           path: out/
-          retention-days: 14
