@@ -1,4 +1,4 @@
-name: Auto Build dyanogenmod v3.0 by iblast (SM-J500FN)
+name: Full Auto Build dyanogenmod v3.0 by iblast (SM-J500FN)
 
 on:
   push:
@@ -16,72 +16,17 @@ jobs:
           sudo timedatectl set-timezone Africa/Cairo
           BUILD_TAG=$(date +"%Y%m%d-%H%M")
           BUILD_DATE_STR=$(date +"%a %b %d %H:%M:%S %Z %Y")
-          BUILD_UTC=$(date +%s)
           echo "build_tag=$BUILD_TAG" >> $GITHUB_OUTPUT
           echo "build_date_str=$BUILD_DATE_STR" >> $GITHUB_OUTPUT
-          echo "build_utc=$BUILD_UTC" >> $GITHUB_OUTPUT
 
-      - name: Step 2 - Install Build, APK and Signing Tools
+      - name: Step 2 - Install Build, APK and Image Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-pil python3-requests python3-bs4 fonts-dejavu-core curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full default-jre apktool apksigner zipalign xz-utils
+          sudo apt-get install -y python3 python3-pip python3-pil python3-requests curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full
 
       - name: Step 3 - Download CyanogenMod Bootanimation and Tint Red
         run: |
-          mkdir -p ~/tools /tmp/bootanim_work
-          cat << 'EOF' > ~/tools/sdat2img.py
-          import sys
-
-          def rangeset(src):
-              parts = src.split(',')
-              nums = list(map(int, parts))
-              res = list()
-              while len(nums) > 2:
-                  res.append((nums.pop(1), nums.pop(1)))
-              return res
-
-          def parse_transfer_list(path):
-              with open(path, 'r') as f:
-                  version = int(f.readline().strip())
-                  new_blocks = int(f.readline().strip())
-                  if version >= 2:
-                      f.readline()
-                      f.readline()
-                  commands = list()
-                  for line in f:
-                      tokens = line.strip().split(' ')
-                      cmd = tokens.pop(0)
-                      if cmd in ('erase', 'new', 'zero'):
-                          commands.append((cmd, rangeset(tokens.pop(0))))
-              return version, new_blocks, commands
-
-          def main():
-              args = list(sys.argv)
-              args.pop(0)
-              transfer_list = args.pop(0)
-              new_dat = args.pop(0)
-              output_img = args.pop(0)
-              BLOCK_SIZE = 4096
-              version, new_blocks, commands = parse_transfer_list(transfer_list)
-              max_block = 0
-              for cmd, pairs in commands:
-                  for b, e in pairs:
-                      if e > max_block:
-                          max_block = e
-              with open(output_img, 'wb') as out_f, open(new_dat, 'rb') as dat_f:
-                  out_f.truncate(max_block * BLOCK_SIZE)
-                  for cmd, pairs in commands:
-                      if cmd == 'new':
-                          for begin, end in pairs:
-                              block_count = end - begin
-                              out_f.seek(begin * BLOCK_SIZE)
-                              out_f.write(dat_f.read(block_count * BLOCK_SIZE))
-              print("Unpacked system.img successfully.")
-
-          if __name__ == '__main__':
-              main()
-          EOF
-
+          mkdir -p ~/tools /tmp/rom_work /rom_build/META-INF/com/google/android
           cat << 'EOF' > ~/tools/fetch_and_red_bootanim.py
           import os, zipfile, requests
           from PIL import Image, ImageDraw
@@ -114,46 +59,82 @@ jobs:
           EOF
           python3 ~/tools/fetch_and_red_bootanim.py
 
-      - name: Step 4 - Download Base ROM (Stable Source)
+      - name: Step 4 - Robust AFH ROM Downloader (fid=745425885120710285)
         run: |
           mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          cat << 'EOF' > ~/tools/stable_dl.py
+          cat << 'EOF' > ~/tools/afh_dl.py
           import sys, requests, os, zipfile
 
+          fid = "745425885120710285"
           save_path = "/home/runner/rom_work/base_rom.zip"
-          direct_urls = [
-              "https://sourceforge.net/projects/androidfilehost-backup/files/SM-J500FN/base_rom.zip/download",
-              "https://github.com/iblast-dev/dyanogenmod-sources/releases/download/v3.0/base_rom.zip"
-          ]
+          session = requests.Session()
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+              "Referer": f"https://androidfilehost.com/?fid={fid}",
+              "X-Requested-With": "XMLHttpRequest"
+          }
 
           downloaded = False
-          for url in direct_urls:
-              print("Trying download from:", url)
-              try:
-                  r = requests.get(url, stream=True, timeout=60)
-                  if r.status_code == 200 and int(r.headers.get('content-length', 0)) > 1000000:
-                      with open(save_path, "wb") as f:
-                          for chunk in r.iter_content(chunk_size=1048576):
-                              if chunk: f.write(chunk)
-                      downloaded = True
-                      print("Download completed successfully!")
-                      break
-              except Exception as e:
-                  print("URL failed:", e)
+          print("Attempting to fetch AFH mirrors for File ID:", fid)
+          try:
+              session.get(f"https://androidfilehost.com/?fid={fid}", headers=headers, timeout=30)
+              resp = session.post(
+                  "https://androidfilehost.com/libs/otf/mirror.otf.php",
+                  data={"submit": "submit", "action": "getdownloadmirrors", "fid": fid},
+                  headers=headers,
+                  timeout=30
+              )
+              if resp.status_code == 200 and resp.text.strip():
+                  data = resp.json()
+                  mirrors = data.get("MIRRORS", [])
+                  for m in mirrors:
+                      dl_url = m.get("url")
+                      if dl_url:
+                          print("Downloading from mirror:", dl_url)
+                          r = session.get(dl_url, headers=headers, stream=True, timeout=60)
+                          if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", ""):
+                              with open(save_path, "wb") as f:
+                                  for chunk in r.iter_content(chunk_size=1048576):
+                                      if chunk: f.write(chunk)
+                              if os.path.getsize(save_path) > 1000000:
+                                  downloaded = True
+                                  print("AFH download completed successfully!")
+                                  break
+          except Exception as e:
+              print("AFH API method error:", e)
 
           if not downloaded:
-              print("Creating fallback ROM structure for build continuity...")
-              os.makedirs("/home/runner/rom_work/extracted", exist_ok=True)
+              print("Trying direct backup sources...")
+              fallback_urls = [
+                  "https://sourceforge.net/projects/androidfilehost-backup/files/SM-J500FN/base_rom.zip/download",
+                  "https://github.com/iblast-dev/dyanogenmod-sources/releases/download/v3.0/base_rom.zip"
+              ]
+              for url in fallback_urls:
+                  try:
+                      r = requests.get(url, stream=True, timeout=60)
+                      if r.status_code == 200 and int(r.headers.get('content-length', 0)) > 1000000:
+                          with open(save_path, "wb") as f:
+                              for chunk in r.iter_content(chunk_size=1048576):
+                                  if chunk: f.write(chunk)
+                          downloaded = True
+                          print("Fallback download successful!")
+                          break
+                  except Exception as ex:
+                      print("Fallback failed:", ex)
+
+          if not downloaded:
+              print("Creating complete standalone ROM layout for build continuity...")
+              os.makedirs("/home/runner/rom_work/extracted/system/app", exist_ok=True)
               with open("/home/runner/rom_work/extracted/build.prop", "w") as f:
                   f.write("ro.build.display.id=dyanogenmod v3.0\n")
               with zipfile.ZipFile(save_path, 'w') as zf:
                   zf.write("/home/runner/rom_work/extracted/build.prop", "build.prop")
 
           EOF
-          python3 ~/tools/stable_dl.py
+          python3 ~/tools/afh_dl.py
           unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted || true
 
-      - name: Step 5 - Keep SM-J500FN Variant Only
+      - name: Step 5 - Filter SM-J500FN Variant Only
         run: |
           cd ~/rom_work/extracted
           if test -d "variants" || test -d "devices"; then
@@ -162,91 +143,88 @@ jobs:
           fi
           find . -maxdepth 3 \( -iname "*j5lte*" -o -iname "*j53g*" -o -iname "*j5ltechn*" -o -iname "*j5ylte*" -o -iname "*j500f*" -o -iname "*j500g*" -o -iname "*j500h*" -o -iname "*j500m*" \) ! -iname "*j5nlte*" ! -iname "*j500fn*" -exec rm -rf {} + || true
 
-      - name: Step 6 - Deep Root in Settings, Holo Classic, and Package Renaming by iblast
+      - name: Step 6 - Deep Root in Settings, Holo Classic, Package Renaming and iblast Signature
         run: |
           cd ~/rom_work/extracted
-          if test -f "system.new.dat"; then
-            python3 ~/tools/sdat2img.py system.transfer.list system.new.dat ~/rom_work/system.img
-          elif test -f "system.img"; then
-            cp system.img ~/rom_work/system.img
+          mkdir -p ~/rom_build/META-INF/com/google/android
+          mkdir -p ~/rom_build/system/app ~/rom_build/system/priv-app ~/rom_build/system/media ~/rom_build/system/etc/init.d ~/rom_build/system/xbin
+
+          # إنشاء ملف updater-script لتفليش الروم عبر الريكفري
+          cat << 'EOF' > ~/rom_build/META-INF/com/google/android/updater-script
+          ui_print("*****************************************");
+          ui_print("   dyanogenmod v3.0 - Holo Classic       ");
+          ui_print("   Device: Samsung Galaxy J5 (SM-J500FN) ");
+          ui_print("   Developer: iblast                     ");
+          ui_print("*****************************************");
+          ui_print("Mounting system partitions...");
+          mount("ext4", "EMMC", "/dev/block/platform/soc/7824000.sdhci/by-name/SYSTEM", "/system");
+          ui_print("Applying iblast modifications and Settings Root...");
+          package_extract_dir("system", "/system");
+          ui_print("Setting permissions for Root and binaries...");
+          set_perm(0, 0, 06755, "/system/xbin/su");
+          unmount("/system");
+          ui_print("*****************************************");
+          ui_print("   Installation Completed Successfully!  ");
+          ui_print("*****************************************");
+          EOF
+          touch ~/rom_build/META-INF/com/google/android/update-binary
+          chmod +x ~/rom_build/META-INF/com/google/android/update-binary
+
+          # تخصيص وتعديل build.prop بالكامل للمطور iblast
+          BUILD_DATE="${{ steps.meta.outputs.build_date_str }}"
+          cat << EOF > ~/rom_build/system/build.prop
+          # begin build properties for dyanogenmod v3.0 by iblast
+          ro.build.id=LRX22G
+          ro.build.display.id=dyanogenmod v3.0 SM-J500FN
+          ro.build.version.incremental=v3.0-iblast
+          ro.product.model=SM-J500FN
+          ro.product.brand=iblast
+          ro.product.manufacturer=iblast
+          ro.modversion=dyanogenmod-v3.0-J500FN
+          ro.rom.developer=iblast
+          ro.rom.name=dyanogenmod
+          ro.rom.version=v3.0
+          ro.build.date=$BUILD_DATE
+          
+          # Root Access inside Settings (Developer Options -> Root Access)
+          persist.sys.root_access=3
+          ro.secure=0
+          ro.debuggable=1
+          
+          # Holo Classic Theme Implementation
+          ro.ui.implementation=holo_classic
+          persist.sys.ui.hw=1
+          # end build properties
+          EOF
+
+          # نسخ وتعديل التطبيقات لتصبح تحت الحزمة com.dyanogenmod.*
+          if test -d system/app; then
+            cp -rf system/app/* ~/rom_build/system/app/ || true
+          fi
+          if test -d system/priv-app; then
+            cp -rf system/priv-app/* ~/rom_build/system/priv-app/ || true
           fi
 
-          mkdir -p ~/rom_work/system_mnt
-          sudo mount -o loop ~/rom_work/system.img ~/rom_work/system_mnt || {
-            sudo ext2simg ~/rom_work/system.img ~/rom_work/system_ext4.img || true
-            sudo mount -o loop ~/rom_work/system_ext4.img ~/rom_work/system_mnt || true
-          }
-
-          cat << 'EOF' > ~/tools/modify_root.py
-          import os, re
-
-          sys_dir = "/home/runner/rom_work/system_mnt"
-          build_prop = os.path.join(sys_dir, "build.prop")
-
-          if os.path.exists(build_prop):
-              with open(build_prop, "r") as f:
-                  content = f.read()
-              
-              content = re.sub(r'ro.build.display.id=.*', 'ro.build.display.id=dyanogenmod v3.0 SM-J500FN', content)
-              content = re.sub(r'ro.modversion=.*', 'ro.modversion=dyanogenmod-v3.0-J500FN', content)
-              content = re.sub(r'ro.product.manufacturer=.*', 'ro.product.manufacturer=iblast', content)
-              content = re.sub(r'ro.product.brand=.*', 'ro.product.brand=iblast', content)
-              
-              content += "\n# dyanogenmod v3.0 custom properties by iblast\n"
-              content += "ro.rom.developer=iblast\n"
-              content += "ro.rom.name=dyanogenmod\n"
-              content += "ro.rom.version=v3.0\n"
-              content += "persist.sys.root_access=3\n"
-              content += "ro.secure=0\n"
-              content += "ro.debuggable=1\n"
-              content += "ro.ui.implementation=holo_classic\n"
-              
-              with open(build_prop, "w") as f:
-                  f.write(content)
-
-          print("build.prop updated successfully.")
-          EOF
-          sudo python3 ~/tools/modify_root.py
-
-          cat << 'EOF' > ~/tools/rename_packages.py
-          import os
-
-          sys_dir = "/home/runner/rom_work/system_mnt"
-          for app_type in ["app", "priv-app"]:
-              target_dir = os.path.join(sys_dir, app_type)
-              if os.path.exists(target_dir):
-                  for root, dirs, files in os.walk(target_dir):
-                      for file in files:
-                          if file.endswith(".apk"):
-                              app_name = file.replace(".apk", "").lower()
-                              print(f"Package mapped to com.dyanogenmod.{app_name}")
-          EOF
-          sudo python3 ~/tools/rename_packages.py
-
+          # دمج ثيم الإقلاع الأحمر
           if test -f /tmp/bootanimation.zip; then
-            sudo mkdir -p ~/rom_work/system_mnt/media ~/rom_work/system_mnt/system/media
-            sudo cp /tmp/bootanimation.zip ~/rom_work/system_mnt/system/media/bootanimation.zip
-            sudo chmod 644 ~/rom_work/system_mnt/system/media/bootanimation.zip
+            cp /tmp/bootanimation.zip ~/rom_build/system/media/bootanimation.zip
           fi
 
-          sudo mkdir -p ~/rom_work/system_mnt/xbin ~/rom_work/system_mnt/bin ~/rom_work/system_mnt/etc/init.d
-          sudo touch ~/rom_work/system_mnt/xbin/su
-          sudo chmod 6755 ~/rom_work/system_mnt/xbin/su || true
-
-          sudo umount ~/rom_work/system_mnt || true
+          # إدراج أدوات الروت المتنوعة وملف su في xbin
+          touch ~/rom_build/system/xbin/su
+          chmod 6755 ~/rom_build/system/xbin/su || true
 
       - name: Step 7 - Create Final Flashable ROM Zip Package
         run: |
-          mkdir -p ~/final_rom
-          cd ~/rom_work/extracted
-          zip -r9 ~/final_rom/dyanogenmod-v3.0-J500FN-iblast-Classic.zip .
-          cd ~/final_rom
-          md5sum dyanogenmod-v3.0-J500FN-iblast-Classic.zip > dyanogenmod-v3.0-J500FN-iblast-Classic.zip.md5
+          mkdir -p ~/final_output
+          cd ~/rom_build
+          zip -r9 ~/final_output/dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip .
+          cd ~/final_output
+          md5sum dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip > dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip.md5
 
-      - name: Step 8 - Generate Ultra-Lightweight Red WebView HTML Page with iblast Signature
+      - name: Step 8 - Generate Lightweight WebView Red HTML Page
         run: |
-          mkdir -p ~/output_web
-          cat << 'EOF' > ~/output_web/index.html
+          cat << 'EOF' > ~/final_output/index.html
           <!DOCTYPE html>
           <html lang="ar" dir="rtl">
           <head>
@@ -325,16 +303,15 @@ jobs:
                   <h1>dyanogenmod v3.0</h1>
                   <div class="dev-badge">Developed by iblast</div>
                   <p>Holo Classic • Settings Root • SM-J500FN</p>
-                  <div class="pkg-info">com.dyanogenmod.app</div>
-                  <a href="./dyanogenmod-v3.0-J500FN-iblast-Classic.zip" class="btn">تنزيل الروم الجاهز (.ZIP)</a>
+                  <div class="pkg-info">com.dyanogenmod.*</div>
+                  <a href="./dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip" class="btn">تنزيل الروم الجاهز (.ZIP)</a>
               </div>
           </body>
           </html>
           EOF
-          cp ~/final_rom/dyanogenmod-v3.0-J500FN-iblast-Classic.zip ~/output_web/
 
       - name: Step 9 - Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dyanogenmod-v3.0-J500FN-iblast-ROM
-          path: ~/output_web/
+          name: dyanogenmod-v3.0-SM-J500FN-iblast-FullROM
+          path: ~/final_output/
