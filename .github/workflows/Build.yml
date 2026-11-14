@@ -1,0 +1,146 @@
+name: Build Custom CM-13.0 ROM (SM-J500FN)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rom_name:
+        description: 'Your Custom ROM Name'
+        required: true
+        default: 'MyCustomCM13'
+      rom_version:
+        description: 'ROM Version'
+        required: true
+        default: 'v1.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Cloud Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+          df -h
+
+      - name: Install Build Dependencies & Legacy Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev \
+            liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
+            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            openjdk-8-jdk python-is-python3 wget
+          sudo update-java-alternatives -s java-1.8.0-openjdk-amd64
+          mkdir -p ~/bin
+          curl https://googleapis.com > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Configure Git & Swap Space
+        run: |
+          git config --global user.name "CustomROMBuilder"
+          git config --global user.email "builder@customrom.local"
+          git config --global color.ui false
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Initialize Shallow CM-13.0 Source
+        run: |
+          mkdir -p ~/android/cm13
+          cd ~/android/cm13
+          repo init -u https://github.com -b cm-13.0 --depth=1
+
+      - name: Add SM-J500FN (j5nltexx) Trees & Strip Heavy Prebuilts
+        run: |
+          mkdir -p ~/android/cm13/.repo/local_manifests
+          cat << 'EOF' > ~/android/cm13/.repo/local_manifests/roomservice.xml
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <!-- Remove macOS toolchains & CTS to save 15GB+ -->
+            <remove-project name="platform/prebuilts/clang/darwin-x86/host/3.6" />
+            <remove-project name="platform/prebuilts/gcc/darwin-x86/aarch64/aarch64-linux-android-4.9" />
+            <remove-project name="platform/prebuilts/gcc/darwin-x86/arm/arm-eabi-4.8" />
+            <remove-project name="platform/prebuilts/gcc/darwin-x86/arm/arm-linux-androideabi-4.9" />
+            <remove-project name="platform/prebuilts/gcc/darwin-x86/host/i686-apple-darwin-4.2.1" />
+            <remove-project name="platform/prebuilts/gcc/darwin-x86/mips/mips64el-linux-android-4.9" />
+            <remove-project name="platform/prebuilts/gcc/darwin-x86/x86/x86_64-linux-android-4.9" />
+            <remove-project name="platform/prebuilts/gdb/darwin-x86" />
+            <remove-project name="platform/prebuilts/go/darwin-x86" />
+            <remove-project name="platform/prebuilts/python/darwin-x86/2.7.5" />
+            <remove-project name="platform/cts" />
+
+            <!-- Samsung Galaxy J5 (SM-J500FN / j5nltexx) Device, Kernel & Vendor -->
+            <project name="LineageOS/android_device_samsung_j5nltexx" path="device/samsung/j5nltexx" remote="github" revision="cm-13.0" />
+            <project name="LineageOS/android_device_samsung_j5-common" path="device/samsung/j5-common" remote="github" revision="cm-13.0" />
+            <project name="LineageOS/android_device_samsung_msm8916-common" path="device/samsung/msm8916-common" remote="github" revision="cm-13.0" />
+            <project name="LineageOS/android_device_samsung_qcom-common" path="device/samsung/qcom-common" remote="github" revision="cm-13.0" />
+            <project name="LineageOS/android_kernel_samsung_msm8916" path="kernel/samsung/msm8916" remote="github" revision="cm-13.0" />
+            <project name="TheMuppets/proprietary_vendor_samsung" path="vendor/samsung" remote="github" revision="cm-13.0" />
+          </manifest>
+          EOF
+
+      - name: Sync Source Code
+        run: |
+          cd ~/android/cm13
+          repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle
+
+      - name: Apply Custom Branding, Debloat & Low-RAM Tweaks
+        run: |
+          cd ~/android/cm13
+          
+          # 1. Rebrand ROM name inside CM common configuration
+          sed -i "s/CM_VERSION :=.*/CM_VERSION := ${{ github.event.inputs.rom_name }}-${{ github.event.inputs.rom_version }}-j5nltexx/g" vendor/cm/config/common.mk
+          
+          # 2. Inject Low-RAM, Speed, and Battery tweaks into device system.prop
+          cat << 'EOF' >> device/samsung/j5nltexx/system.prop
+          
+          # Custom ROM Performance & Low-RAM Tweaks
+          ro.build.display.id=${{ github.event.inputs.rom_name }} ${{ github.event.inputs.rom_version }}
+          ro.config.low_ram=true
+          ro.sys.fw.bg_apps_limit=16
+          persist.sys.purgeable_assets=1
+          debug.sf.hw=1
+          debug.performance.tuning=1
+          video.accelerate.hw=1
+          windowsmgr.max_events_per_sec=150
+          ro.ril.disable.power.collapse=0
+          pm.sleep_mode=1
+          wifi.supplicant_scan_interval=180
+          ro.telephony.call_ring.delay=0
+          ring.delay=0
+          EOF
+
+          # 3. Remove heavy unneeded CM apps from build list to keep ROM tiny
+          sed -i '/Browser/d;/Eleven/d;/CMWallpapers/d;/CMAccount/d;/CMBugReport/d;/Screencast/d' vendor/cm/config/common.mk
+
+      - name: Download Lightweight F-Droid Store APK
+        run: |
+          mkdir -p ~/android/cm13/vendor/cm/prebuilt/common/app/FDroid
+          wget -O ~/android/cm13/vendor/cm/prebuilt/common/app/FDroid/FDroid.apk https://f-droid.org
+          echo 'PRODUCT_COPY_FILES += vendor/cm/prebuilt/common/app/FDroid/FDroid.apk:system/app/FDroid/FDroid.apk' >> ~/android/cm13/device/samsung/j5nltexx/device.mk
+
+      - name: Compile Full Flashable ROM Zip
+        run: |
+          cd ~/android/cm13
+          export USE_CCACHE=1
+          export CCACHE_DIR=~/.ccache
+          ccache -M 5G
+          export ANDROID_JACK_VM_ARGS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4G"
+          source build/envsetup.sh
+          lunch cm_j5nltexx-userdebug
+          mka bacon -j$(nproc)
+
+      - name: Upload Finished ROM to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.rom_version }}-${{ github.run_number }}
+          name: "${{ github.event.inputs.rom_name }} ${{ github.event.inputs.rom_version }} (SM-J500FN)"
+          body: "Automated custom CM-13.0 ROM build for Samsung Galaxy J5 (SM-J500FN / j5nltexx)."
+          files: ~/android/cm13/out/target/product/j5nltexx/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
