@@ -27,11 +27,12 @@ jobs:
           sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
             git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev \
             liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
-            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            libxml2-utils lzop pngcrush repo rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
             openjdk-8-jdk python-is-python3 wget
           sudo update-java-alternatives -s java-1.8.0-openjdk-amd64
           mkdir -p ~/bin
-          curl https://googleapis.com > ~/bin/repo
+          curl -fsSL https://googlesource.com | base64 -d > ~/bin/repo || true
+          if [ ! -s ~/bin/repo ]; then cp /usr/bin/repo ~/bin/repo; fi
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
@@ -51,7 +52,7 @@ jobs:
         run: |
           mkdir -p ~/android/cm13
           cd ~/android/cm13
-          repo init -u https://github.com -b cm-13.0 --depth=1
+          ~/bin/repo init -u https://github.com -b cm-13.0 --depth=1
 
       - name: Add SM-J500FN (j5nltexx) Trees & Strip Heavy Prebuilts
         run: |
@@ -59,7 +60,6 @@ jobs:
           cat << 'EOF' > ~/android/cm13/.repo/local_manifests/roomservice.xml
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <!-- حذف ملفات الماك والاختبارات لتوفير أكثر من 15 جيجابايت -->
             <remove-project name="platform/prebuilts/clang/darwin-x86/host/3.6" />
             <remove-project name="platform/prebuilts/gcc/darwin-x86/aarch64/aarch64-linux-android-4.9" />
             <remove-project name="platform/prebuilts/gcc/darwin-x86/arm/arm-eabi-4.8" />
@@ -72,7 +72,6 @@ jobs:
             <remove-project name="platform/prebuilts/python/darwin-x86/2.7.5" />
             <remove-project name="platform/cts" />
 
-            <!-- تعريفات هاتف Samsung Galaxy J5 (SM-J500FN / j5nltexx) -->
             <project name="LineageOS/android_device_samsung_j5nltexx" path="device/samsung/j5nltexx" remote="github" revision="cm-13.0" />
             <project name="LineageOS/android_device_samsung_j5-common" path="device/samsung/j5-common" remote="github" revision="cm-13.0" />
             <project name="LineageOS/android_device_samsung_msm8916-common" path="device/samsung/msm8916-common" remote="github" revision="cm-13.0" />
@@ -85,7 +84,7 @@ jobs:
       - name: Sync Source Code
         run: |
           cd ~/android/cm13
-          repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle
+          ~/bin/repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle
 
       - name: Apply Custom Branding, Debloat & Low-RAM Tweaks
         run: |
@@ -93,10 +92,8 @@ jobs:
           ROM_NAME="${{ github.event.repository.name }}"
           ROM_VER="${{ github.event.inputs.rom_version }}"
           
-          # 1. تسمية الروم باسم المستودع تلقائياً
           sed -i "s/CM_VERSION :=.*/CM_VERSION := ${ROM_NAME}-${ROM_VER}-j5nltexx/g" vendor/cm/config/common.mk
           
-          # 2. إضافة تحسينات الرام الخفيف والسرعة واسم المطور
           cat << EOF >> device/samsung/j5nltexx/system.prop
           
           # Custom ROM Branding & Tweaks
@@ -116,7 +113,6 @@ jobs:
           ring.delay=0
           EOF
 
-          # 3. حذف التطبيقات الثقيلة لتخفيف حجم الروم
           sed -i '/Browser/d;/Eleven/d;/CMWallpapers/d;/CMAccount/d;/CMBugReport/d;/Screencast/d' vendor/cm/config/common.mk
 
       - name: Download Lightweight F-Droid Store APK
@@ -136,7 +132,14 @@ jobs:
           lunch cm_j5nltexx-userdebug
           mka bacon -j$(nproc)
 
-      - name: Upload Finished ROM to GitHub Releases
+      - name: Save ROM inside Action Artifacts (تنزيل مباشر من صفحة الـ Action)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-${{ github.event.inputs.rom_version }}-SM-J500FN
+          path: ~/android/cm13/out/target/product/j5nltexx/*.zip
+          retention-days: 30
+
+      - name: Upload Finished ROM to GitHub Releases (تنزيل من قسم الإصدارات)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.rom_version }}-${{ github.run_number }}
