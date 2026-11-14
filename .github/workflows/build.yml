@@ -1,277 +1,75 @@
-name: Full Auto Build dyanogenmod v3.0 by iblast (SM-J500FN)
+name: Build DyanogenMod from my base zip
 
 on:
-  push:
-    paths:
-      - '.github/workflows/build.yml'
   workflow_dispatch:
+    inputs:
+      base_zip_url:
+        description: "Direct link to a full 6.0.1 flashable zip for SM-J500FN"
+        required: true
+        type: string
+      rom_name:
+        description: "Output name"
+        required: true
+        default: "DyanogenMod-6.0.1-J500FN"
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    steps:
-      - name: Step 1 - Set Cairo Timezone and Timestamp
-        id: meta
-        run: |
-          sudo timedatectl set-timezone Africa/Cairo
-          BUILD_TAG=$(date +"%Y%m%d-%H%M")
-          BUILD_DATE_STR=$(date +"%a %b %d %H:%M:%S %Z %Y")
-          echo "build_tag=$BUILD_TAG" >> $GITHUB_OUTPUT
-          echo "build_date_str=$BUILD_DATE_STR" >> $GITHUB_OUTPUT
+    timeout-minutes: 60
 
-      - name: Step 2 - Install Build, APK and Image Tools
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-pil python3-requests curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full
+          sudo apt-get install -y zip unzip curl
 
-      - name: Step 3 - Setup Environment and Download CyanogenMod Bootanimation
+      - name: Download base ROM
         run: |
-          mkdir -p ~/tools ~/rom_work ~/rom_build/META-INF/com/google/android
-          cat << 'EOF' > ~/tools/fetch_and_red_bootanim.py
-          import os, zipfile, requests
-          from PIL import Image, ImageDraw
+          curl -L --fail -o base.zip "${{ inputs.base_zip_url }}"
+          unzip -tq base.zip
+          mkdir -p base && unzip -q base.zip -d base
+          ls -la base
 
-          cm_boot_url = "https://raw.githubusercontent.com/LineageOS/android_frameworks_base/main/data/bootanimation.zip"
-          anim_zip_path = "/tmp/bootanimation.zip"
-          
-          try:
-              resp = requests.get(cm_boot_url, timeout=30)
-              if resp.status_code == 200 and len(resp.content) > 1000:
-                  with open(anim_zip_path, "wb") as f:
-                      f.write(resp.content)
-              else:
-                  raise Exception("Invalid response.")
-          except Exception as e:
-              os.makedirs("/tmp/bootanim/part0", exist_ok=True)
-              W, H = 720, 1280
-              img = Image.new("RGB", (W, H), (0, 0, 0))
-              draw = ImageDraw.Draw(img)
-              draw.rounded_rectangle((W//2 - 160, H//2 - 160, W//2 + 160, H//2 + 160), radius=60, fill=(229, 20, 20))
-              img.save("/tmp/bootanim/part0/0000.png")
-              with open("/tmp/bootanim/desc.txt", "w") as f:
-                  f.write("720 1280 15\np 1 0 part0\n")
-              with zipfile.ZipFile(anim_zip_path, "w") as zf:
-                  zf.write("/tmp/bootanim/desc.txt", "desc.txt")
-                  zf.write("/tmp/bootanim/part0/0000.png", "part0/0000.png")
-          EOF
-          python3 ~/tools/fetch_and_red_bootanim.py
-
-      - name: Step 4 - Fetch Base ROM (Direct Downloading AFH Engine)
+      - name: Check required parts exist
         run: |
-          mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          cat << 'EOF' > ~/tools/afh_downloader.py
-          import requests, re, sys, os
+          test -f base/META-INF/com/google/android/update-binary || (echo "::error::update-binary missing in base zip" && exit 1)
+          test -f base/META-INF/com/google/android/updater-script || (echo "::error::updater-script missing in base zip" && exit 1)
+          echo "Base ROM structure OK"
 
-          url = "https://androidfilehost.com/?fid=745425885120710285"
-          save_path = "/home/runner/rom_work/base_rom.zip"
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          }
-
-          print("Connecting to AFH page to retrieve direct download mirrors...")
-          try:
-              session = requests.Session()
-              r = session.get(url, headers=headers, timeout=30)
-              # استخراج رابط المرآة المباشر من داخل الصفحة تلقائياً
-              matches = re.findall(r'href="(https?://[^"]+/dl/[^"]+)"', r.text)
-              if not matches:
-                  matches = re.findall(r'https?://[a-zA-Z0-9\.-]+\.androidfilehost\.com/dl/[^\s"\'<>]+', r.text)
-
-              if matches:
-                  dl_link = matches[0]
-                  print("Found direct download link:", dl_link)
-                  res = session.get(dl_link, headers=headers, stream=True, timeout=120)
-                  with open(save_path, "wb") as f:
-                      for chunk in res.iter_content(chunk_size=1048576):
-                          if chunk: f.write(chunk)
-                  print("Base ROM Downloaded successfully. Size:", os.path.getsize(save_path))
-              else:
-                  print("Could not parse direct mirror from HTML response.")
-          except Exception as e:
-              print("Download error:", e)
-
-          EOF
-          python3 ~/tools/afh_downloader.py
-          
-          # التأكد من فك الضغط فقط إن كان الملف تم تنزيله بحجم حقيقي
-          if test -f ~/rom_work/base_rom.zip && test $(stat -c%s ~/rom_work/base_rom.zip) -gt 10000000; then
-            unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
+      - name: Apply my overlay
+        run: |
+          mkdir -p rom
+          cp -r base/. rom/
+          if [ -d overlay ]; then
+            cp -r overlay/. rom/
+            echo "Overlay applied:"
+            find overlay -type f
           else
-            echo "Warning: Base ROM download was blocked or incomplete."
+            echo "No overlay folder, base copied as-is"
           fi
 
-      - name: Step 5 - Filter SM-J500FN Variant Only
+      - name: Check build.prop
         run: |
-          cd ~/rom_work/extracted || exit 0
-          if test -d "variants" || test -d "devices"; then
-            find . -type f \( -iname "*j5nlte*" -o -iname "*j500fn*" \) -exec cp {} . \; || true
-            rm -rf variants devices
+          if [ -f rom/system/build.prop ]; then
+            grep -E "^ro\.(build\.display\.id|product\.model|modversion)=" rom/system/build.prop || true
+          else
+            echo "::warning::system/build.prop not found in rom"
           fi
-          find . -maxdepth 3 \( -iname "*j5lte*" -o -iname "*j53g*" -o -iname "*j5ltechn*" -o -iname "*j5ylte*" -o -iname "*j500f*" -o -iname "*j500g*" -o -iname "*j500h*" -o -iname "*j500m*" \) ! -iname "*j5nlte*" ! -iname "*j500fn*" -exec rm -rf {} + || true
 
-      - name: Step 6 - Deep Root in Settings, Holo Classic, Package Renaming and iblast Signature
+      - name: Pack flashable zip
         run: |
-          mkdir -p ~/rom_build/META-INF/com/google/android
-          mkdir -p ~/rom_build/system/app ~/rom_build/system/priv-app ~/rom_build/system/media ~/rom_build/system/etc/init.d ~/rom_build/system/xbin
+          mkdir -p out
+          cd rom && zip -qr -0 ../out/${{ inputs.rom_name }}.zip . && cd ..
+          cd out && md5sum ${{ inputs.rom_name }}.zip > ${{ inputs.rom_name }}.zip.md5 && cd ..
+          ls -lh out
 
-          cat << 'EOF' > ~/rom_build/META-INF/com/google/android/updater-script
-          ui_print("*****************************************");
-          ui_print("   dyanogenmod v3.0 - Holo Classic       ");
-          ui_print("   Device: Samsung Galaxy J5 (SM-J500FN) ");
-          ui_print("   Developer: iblast                     ");
-          ui_print("*****************************************");
-          ui_print("Mounting system partitions...");
-          mount("ext4", "EMMC", "/dev/block/platform/soc/7824000.sdhci/by-name/SYSTEM", "/system");
-          ui_print("Applying iblast modifications and Settings Root...");
-          package_extract_dir("system", "/system");
-          ui_print("Setting permissions for Root and binaries...");
-          set_perm(0, 0, 06755, "/system/xbin/su");
-          unmount("/system");
-          ui_print("*****************************************");
-          ui_print("   Installation Completed Successfully!  ");
-          ui_print("*****************************************");
-          EOF
-          touch ~/rom_build/META-INF/com/google/android/update-binary
-          chmod +x ~/rom_build/META-INF/com/google/android/update-binary
-
-          BUILD_DATE="${{ steps.meta.outputs.build_date_str }}"
-          cat << EOF > ~/rom_build/system/build.prop
-          # begin build properties for dyanogenmod v3.0 by iblast
-          ro.build.id=LRX22G
-          ro.build.display.id=dyanogenmod v3.0 SM-J500FN
-          ro.build.version.incremental=v3.0-iblast
-          ro.product.model=SM-J500FN
-          ro.product.brand=iblast
-          ro.product.manufacturer=iblast
-          ro.modversion=dyanogenmod-v3.0-J500FN
-          ro.rom.developer=iblast
-          ro.rom.name=dyanogenmod
-          ro.rom.version=v3.0
-          ro.build.date=$BUILD_DATE
-          
-          # Root Access inside Settings (Developer Options -> Root Access)
-          persist.sys.root_access=3
-          ro.secure=0
-          ro.debuggable=1
-          
-          # Holo Classic Theme Implementation
-          ro.ui.implementation=holo_classic
-          persist.sys.ui.hw=1
-          # end build properties
-          EOF
-
-          if test -d ~/rom_work/extracted/system/app; then
-            cp -rf ~/rom_work/extracted/system/app/* ~/rom_build/system/app/ || true
-          fi
-          if test -d ~/rom_work/extracted/system/priv-app; then
-            cp -rf ~/rom_work/extracted/system/priv-app/* ~/rom_build/system/priv-app/ || true
-          fi
-
-          if test -f /tmp/bootanimation.zip; then
-            cp /tmp/bootanimation.zip ~/rom_build/system/media/bootanimation.zip
-          fi
-
-          touch ~/rom_build/system/xbin/su
-          chmod 6755 ~/rom_build/system/xbin/su || true
-
-      - name: Step 7 - Create Final Flashable ROM Zip Package
-        run: |
-          mkdir -p ~/final_output
-          cd ~/rom_build
-          zip -r9 ~/final_output/dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip .
-          cd ~/final_output
-          md5sum dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip > dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip.md5
-
-      - name: Step 8 - Generate Lightweight WebView Red HTML Page
-        run: |
-          cat << 'EOF' > ~/final_output/index.html
-          <!DOCTYPE html>
-          <html lang="ar" dir="rtl">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>dyanogenmod v3.0 - iblast</title>
-              <style>
-                  * { box-sizing: border-box; }
-                  body {
-                      background-color: #0d0d0d;
-                      color: #ffffff;
-                      font-family: sans-serif;
-                      text-align: center;
-                      padding: 15px;
-                      margin: 0;
-                  }
-                  .card {
-                      max-width: 380px;
-                      margin: 30px auto;
-                      background: #181818;
-                      border: 2px solid #e51414;
-                      border-radius: 14px;
-                      padding: 20px;
-                      box-shadow: 0 0 20px rgba(229, 20, 20, 0.3);
-                  }
-                  .cid-svg {
-                      width: 90px;
-                      height: 90px;
-                      fill: #e51414;
-                  }
-                  h1 { color: #e51414; font-size: 21px; margin: 10px 0 5px 0; }
-                  p { color: #aaa; font-size: 13px; margin-bottom: 10px; }
-                  .dev-badge {
-                      color: #ff3333;
-                      font-weight: bold;
-                      font-size: 14px;
-                      margin-bottom: 12px;
-                  }
-                  .btn {
-                      display: block;
-                      width: 100%;
-                      background-color: #e51414;
-                      color: #fff;
-                      padding: 14px 0;
-                      font-size: 16px;
-                      font-weight: bold;
-                      text-decoration: none;
-                      border-radius: 8px;
-                      border: none;
-                      cursor: pointer;
-                  }
-                  .btn:active { background-color: #990000; }
-                  .pkg-info {
-                      font-family: monospace;
-                      background: #050505;
-                      color: #00ff66;
-                      padding: 6px;
-                      font-size: 11px;
-                      border-radius: 4px;
-                      margin-bottom: 15px;
-                  }
-              </style>
-          </head>
-          <body>
-              <div class="card">
-                  <svg class="cid-svg" viewBox="0 0 100 100">
-                      <rect x="20" y="30" width="60" height="50" rx="15" fill="#e51414" />
-                      <circle cx="37" cy="50" r="8" fill="#ffffff" />
-                      <circle cx="63" cy="50" r="8" fill="#ffffff" />
-                      <path d="M 40 65 Q 50 75 60 65" stroke="#ffffff" stroke-width="3" fill="none" />
-                      <line x1="35" y1="30" x2="20" y2="10" stroke="#e51414" stroke-width="5" stroke-linecap="round" />
-                      <line x1="65" y1="30" x2="80" y2="10" stroke="#e51414" stroke-width="5" stroke-linecap="round" />
-                      <circle cx="20" cy="10" r="3" fill="#e51414" />
-                      <circle cx="80" cy="10" r="3" fill="#e51414" />
-                  </svg>
-                  <h1>dyanogenmod v3.0</h1>
-                  <div class="dev-badge">Developed by iblast</div>
-                  <p>Holo Classic • Settings Root • SM-J500FN</p>
-                  <div class="pkg-info">com.dyanogenmod.*</div>
-                  <a href="./dyanogenmod-v3.0-SM-J500FN-iblast-Flashable.zip" class="btn">تنزيل الروم الجاهز (.ZIP)</a>
-              </div>
-          </body>
-          </html>
-          EOF
-
-      - name: Step 9 - Upload Artifacts
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: dyanogenmod-v3.0-SM-J500FN-iblast-FullROM
-          path: ~/final_output/
+          name: ${{ inputs.rom_name }}
+          path: out/
+          retention-days: 14
