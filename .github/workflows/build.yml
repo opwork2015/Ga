@@ -59,79 +59,32 @@ jobs:
           EOF
           python3 ~/tools/fetch_and_red_bootanim.py
 
-      - name: Step 4 - Robust AFH ROM Downloader (fid=745425885120710285)
+      - name: Step 4 - Direct Stable ROM Downloader
         run: |
           mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          cat << 'EOF' > ~/tools/afh_dl.py
+          cat << 'EOF' > ~/tools/stable_dl.py
           import sys, requests, os, zipfile
 
-          fid = "745425885120710285"
           save_path = "/home/runner/rom_work/base_rom.zip"
-          session = requests.Session()
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-              "Referer": f"https://androidfilehost.com/?fid={fid}",
-              "X-Requested-With": "XMLHttpRequest"
-          }
-
-          downloaded = False
-          print("Attempting to fetch AFH mirrors for File ID:", fid)
+          
+          # ضع هنا رابط تحميل مباشر وثابت لملف الـ ROM بصيغة .zip إذا توفر لديك
+          direct_url = "https://github.com/iblast-dev/dyanogenmod-sources/releases/download/v3.0/base_rom.zip"
+          
+          print("Downloading base ROM from direct link...")
           try:
-              session.get(f"https://androidfilehost.com/?fid={fid}", headers=headers, timeout=30)
-              resp = session.post(
-                  "https://androidfilehost.com/libs/otf/mirror.otf.php",
-                  data={"submit": "submit", "action": "getdownloadmirrors", "fid": fid},
-                  headers=headers,
-                  timeout=30
-              )
-              if resp.status_code == 200 and resp.text.strip():
-                  data = resp.json()
-                  mirrors = data.get("MIRRORS", [])
-                  for m in mirrors:
-                      dl_url = m.get("url")
-                      if dl_url:
-                          print("Downloading from mirror:", dl_url)
-                          r = session.get(dl_url, headers=headers, stream=True, timeout=60)
-                          if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", ""):
-                              with open(save_path, "wb") as f:
-                                  for chunk in r.iter_content(chunk_size=1048576):
-                                      if chunk: f.write(chunk)
-                              if os.path.getsize(save_path) > 1000000:
-                                  downloaded = True
-                                  print("AFH download completed successfully!")
-                                  break
+              r = requests.get(direct_url, stream=True, timeout=120)
+              if r.status_code == 200:
+                  with open(save_path, "wb") as f:
+                      for chunk in r.iter_content(chunk_size=1048576):
+                          if chunk: f.write(chunk)
+                  print("Base ROM downloaded successfully, size:", os.path.getsize(save_path))
+              else:
+                  raise Exception(f"HTTP status code: {r.status_code}")
           except Exception as e:
-              print("AFH API method error:", e)
-
-          if not downloaded:
-              print("Trying direct backup sources...")
-              fallback_urls = [
-                  "https://sourceforge.net/projects/androidfilehost-backup/files/SM-J500FN/base_rom.zip/download",
-                  "https://github.com/iblast-dev/dyanogenmod-sources/releases/download/v3.0/base_rom.zip"
-              ]
-              for url in fallback_urls:
-                  try:
-                      r = requests.get(url, stream=True, timeout=60)
-                      if r.status_code == 200 and int(r.headers.get('content-length', 0)) > 1000000:
-                          with open(save_path, "wb") as f:
-                              for chunk in r.iter_content(chunk_size=1048576):
-                                  if chunk: f.write(chunk)
-                          downloaded = True
-                          print("Fallback download successful!")
-                          break
-                  except Exception as ex:
-                      print("Fallback failed:", ex)
-
-          if not downloaded:
-              print("Creating complete standalone ROM layout for build continuity...")
-              os.makedirs("/home/runner/rom_work/extracted/system/app", exist_ok=True)
-              with open("/home/runner/rom_work/extracted/build.prop", "w") as f:
-                  f.write("ro.build.display.id=dyanogenmod v3.0\n")
-              with zipfile.ZipFile(save_path, 'w') as zf:
-                  zf.write("/home/runner/rom_work/extracted/build.prop", "build.prop")
-
+              print("Direct download error:", e)
+              sys.exit(1)
           EOF
-          python3 ~/tools/afh_dl.py
+          python3 ~/tools/stable_dl.py
           unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted || true
 
       - name: Step 5 - Filter SM-J500FN Variant Only
