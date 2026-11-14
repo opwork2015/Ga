@@ -1,4 +1,4 @@
-name: Auto Build dyanogenmod v3.0 (DM) Holo Red ROM
+name: Auto Build dyanogenmod v3.0 (DM) Holo Classic SuperSU ROM
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Set Cairo Timezone and Build Timestamp
+      - name: Step 1 - Set Cairo Timezone and Timestamp
         id: meta
         run: |
           sudo timedatectl set-timezone Africa/Cairo
@@ -20,17 +20,13 @@ jobs:
           echo "build_tag=$BUILD_TAG" >> $GITHUB_OUTPUT
           echo "build_date_str=$BUILD_DATE_STR" >> $GITHUB_OUTPUT
           echo "build_utc=$BUILD_UTC" >> $GITHUB_OUTPUT
-          echo "Build Timestamp: $BUILD_DATE_STR"
 
-      - name: Install Build Tools and Headless Firefox
+      - name: Step 2 - Install Build, APK and Signing Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-pil fonts-dejavu-core curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full default-jre apktool apksigner xz-utils
-          pip3 install playwright
-          playwright install firefox
-          playwright install-deps firefox
+          sudo apt-get install -y python3 python3-pip python3-pil python3-requests python3-bs4 fonts-dejavu-core curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full default-jre apktool apksigner zipalign xz-utils
 
-      - name: Create Unpack Tool and dyanogenmod v3.0 Red Bootanimation
+      - name: Step 3 - Build Unpacker and dyanogenmod v3.0 Red Bootanimation
         run: |
           mkdir -p ~/tools
           cat << 'EOF' > ~/tools/sdat2img.py
@@ -39,9 +35,8 @@ jobs:
           def rangeset(src):
               parts = src.split(',')
               nums = list(map(int, parts))
-              res = []
-              i = 1
-              while i < len(nums):
+              res = list()
+              while len(nums) > 2:
                   res.append((nums.pop(1), nums.pop(1)))
               return res
 
@@ -52,7 +47,7 @@ jobs:
                   if version >= 2:
                       f.readline()
                       f.readline()
-                  commands = []
+                  commands = list()
                   for line in f:
                       tokens = line.strip().split(' ')
                       cmd = tokens.pop(0)
@@ -128,105 +123,96 @@ jobs:
               draw.pieslice((cx - 28, cy + 55, cx + 28, cy + 95), start=0, end=180, fill=WHITE)
 
               title_text = "dyanogenmod v3.0"
-              bbox = draw.textbbox((0, 0), title_text, font=font_title)
-              x0, y0, x1, y1 = bbox
+              x0, y0, x1, y1 = draw.textbbox((0, 0), title_text, font=font_title)
               draw.text(((W - (x1 - x0)) // 2, cy + 210), title_text, fill=RED, font=font_title)
 
-              sub_text = "DM HOLO RED EDITION - BY IBLAST"
-              sbbox = draw.textbbox((0, 0), sub_text, font=font_sub)
-              sx0, sy0, sx1, sy1 = sbbox
+              sub_text = "HOLO CLASSIC RED - BY IBLAST"
+              sx0, sy0, sx1, sy1 = draw.textbbox((0, 0), sub_text, font=font_sub)
               draw.text(((W - (sx1 - sx0)) // 2, cy + 280), sub_text, fill=WHITE, font=font_sub)
 
               return img
 
-          for i in range(8):
-              img = draw_logo(i, 8)
-              img.save(f"/tmp/bootanim/part0/000{i}.png")
+          for i in range(6):
+              draw_logo(i, 6).save(f"/tmp/bootanim/part0/000{i}.png")
 
-          for i in range(8):
-              img = draw_logo(7 - i, 8)
-              img.save(f"/tmp/bootanim/part1/000{i}.png")
+          for i in range(6):
+              draw_logo(5 - i, 6).save(f"/tmp/bootanim/part1/000{i}.png")
 
           with open("/tmp/bootanim/desc.txt", "w") as f:
-              f.write("720 1280 18\np 1 0 part0\np 0 0 part1\n")
+              f.write("720 1280 15\np 1 0 part0\np 0 0 part1\n")
 
           with zipfile.ZipFile("/tmp/bootanimation.zip", "w", compression=zipfile.ZIP_STORED) as zf:
               zf.write("/tmp/bootanim/desc.txt", "desc.txt")
               for folder in ("part0", "part1"):
                   for fn in sorted(os.listdir(f"/tmp/bootanim/{folder}")):
                       zf.write(f"/tmp/bootanim/{folder}/{fn}", f"{folder}/{fn}")
-          print("dyanogenmod v3.0 Red bootanimation.zip created!")
           EOF
           python3 ~/tools/make_red_bootanim.py
 
-      - name: Auto Download Base ROM via Firefox
+      - name: Step 4 - Direct API Download Base ROM and SuperSU
         run: |
-          mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          cat << 'EOF' > ~/tools/afh_download.py
-          import sys, time
-          from playwright.sync_api import sync_playwright
+          mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt ~/supersu
+          cat << 'EOF' > ~/tools/afh_api_dl.py
+          import sys, requests
 
-          base = "https://androidfilehost.com"
-          query = "?fid=745425885120710285"
-          url = base + query
+          fid = "745425885120710285"
           save_path = "/home/runner/rom_work/base_rom.zip"
+          session = requests.Session()
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+              "Referer": "https://androidfilehost.com" + fid,
+              "X-Requested-With": "XMLHttpRequest"
+          }
 
-          with sync_playwright() as p:
-              browser = p.firefox.launch(headless=True)
-              context = browser.new_context(
-                  accept_downloads=True,
-                  user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-              )
-              page = context.new_page()
-              print("Opening URL:", url)
-              download_started = False
+          print("Requesting mirror list from AFH API...")
+          session.get("https://androidfilehost.com" + fid, headers=headers, timeout=30)
+          resp = session.post(
+              "https://androidfilehost.com",
+              data={"submit": "submit", "action": "getdownloadmirrors", "fid": fid},
+              headers=headers,
+              timeout=30
+          )
 
-              def handle_download(download):
-                  global download_started
-                  download_started = True
-                  print("Downloading:", download.suggested_filename)
-                  download.save_as(save_path)
-                  print("Download finished!")
+          data = resp.json()
+          mirrors = data.get("MIRRORS", list())
+          print("Mirrors found:", len(mirrors))
 
-              page.on("download", handle_download)
-              page.goto(url, timeout=60000, wait_until="domcontentloaded")
-              time.sleep(5)
+          downloaded = False
+          for m in mirrors:
+              dl_url = m.get("url")
+              if not dl_url:
+                  continue
+              print("Downloading from mirror:", dl_url)
+              try:
+                  with session.get(dl_url, headers=headers, stream=True, timeout=60) as r:
+                      if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", ""):
+                          with open(save_path, "wb") as f:
+                              for chunk in r.iter_content(chunk_size=1048576):
+                                  if chunk:
+                                      f.write(chunk)
+                          downloaded = True
+                          print("Download completed successfully!")
+                          break
+              except Exception as e:
+                  print("Mirror failed:", e)
 
-              start_btn = page.locator("a:has-text('Click Here to Start Download'), button#btn-download").first
-              if start_btn.is_visible(timeout=15000):
-                  print("Clicking start download button...")
-                  start_btn.click()
-
-              time.sleep(8)
-              mirror_links = page.locator("#mirrors a, a.btn-primary, a[href*='/dl/']")
-              count = mirror_links.count()
-              print("Found mirrors:", count)
-              for i in range(count):
-                  if download_started:
-                      break
-                  try:
-                      print("Trying mirror:", i + 1)
-                      mirror_links.nth(i).click(timeout=5000)
-                      time.sleep(6)
-                  except Exception as e:
-                      print("Mirror skipped:", e)
-
-              wait_count = 0
-              while not download_started and wait_count < 60:
-                  time.sleep(3)
-                  wait_count += 1
-
-              browser.close()
-              if not download_started:
-                  print("ERROR: Download did not start.")
-                  sys.exit(1)
+          if not downloaded:
+              print("ERROR: All mirrors failed.")
+              sys.exit(1)
           EOF
 
-          python3 ~/tools/afh_download.py
+          python3 ~/tools/afh_api_dl.py
           unzip -t ~/rom_work/base_rom.zip
           unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
 
-      - name: Strip Other Devices and Extra Developer Docs
+          # تحميل حزمة SuperSU v2.82 الرسمية لدمجها في النظام والإعدادات
+          curl -fsSL "https://chainfire.eu" -o ~/supersu/supersu.zip || \
+          curl -fsSL "https://githubusercontent.com" -o /dev/null
+          if test -f ~/supersu/supersu.zip; then
+            unzip -q ~/supersu/supersu.zip -d ~/supersu/extracted || true
+          fi
+
+      - name: Step 5 - Remove Other Device Variants and Keep SM-J500FN Only
         run: |
           cd ~/rom_work/extracted
           if test -d "variants" || test -d "devices"; then
@@ -236,4 +222,7 @@ jobs:
           find . -maxdepth 3 \( -iname "*j5lte*" -o -iname "*j53g*" -o -iname "*j5ltechn*" -o -iname "*j5ylte*" -o -iname "*j500f*" -o -iname "*j500g*" -o -iname "*j500h*" -o -iname "*j500m*" \) ! -iname "*j5nlte*" ! -iname "*j500fn*" -exec rm -rf {} + || true
           find . -maxdepth 2 -type f \( -iname "*.txt" -o -iname "*.md" -o -iname "changelog*" \) -exec rm -f {} + || true
 
+      - name: Step 6 - Unpack System Image and Inject SuperSU Root
+        run: |
+          cd ~/rom_work/extracted
           if test -f "system.new.dat"; then
