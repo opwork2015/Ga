@@ -21,10 +21,13 @@ jobs:
           echo "build_date_str=$BUILD_DATE_STR" >> $GITHUB_OUTPUT
           echo "build_utc=$BUILD_UTC" >> $GITHUB_OUTPUT
 
-      - name: Step 2 - Install Build, APK and Signing Tools
+      - name: Step 2 - Install Build, APK, Signing and Lightweight WebView Tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-pil python3-requests python3-bs4 fonts-dejavu-core curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full default-jre apktool apksigner zipalign xz-utils
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 python3-pip python3-pil python3-requests python3-bs4 fonts-dejavu-core curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full default-jre apktool apksigner zipalign xz-utils
+          pip3 install -q playwright
+          playwright install chromium
+          playwright install-deps chromium
 
       - name: Step 3 - Build Unpacker and dyanogenmod v3.0 Red Bootanimation
         run: |
@@ -35,7 +38,7 @@ jobs:
           def rangeset(src):
               parts = src.split(',')
               nums = list(map(int, parts))
-              res = list()
+              res = []
               while len(nums) > 2:
                   res.append((nums.pop(1), nums.pop(1)))
               return res
@@ -47,27 +50,23 @@ jobs:
                   if version >= 2:
                       f.readline()
                       f.readline()
-                  commands = list()
+                  commands = []
                   for line in f:
                       tokens = line.strip().split(' ')
+                      if not tokens or not tokens[0]:
+                          continue
                       cmd = tokens.pop(0)
                       if cmd in ('erase', 'new', 'zero'):
                           commands.append((cmd, rangeset(tokens.pop(0))))
               return version, new_blocks, commands
 
           def main():
-              args = list(sys.argv)
-              args.pop(0)
-              transfer_list = args.pop(0)
-              new_dat = args.pop(0)
-              output_img = args.pop(0)
+              if len(sys.argv) < 4:
+                  sys.exit("Usage: sdat2img.py <transfer_list> <system_new_dat> <system_img>")
+              transfer_list, new_dat, output_img = sys.argv[1], sys.argv[2], sys.argv[3]
               BLOCK_SIZE = 4096
               version, new_blocks, commands = parse_transfer_list(transfer_list)
-              max_block = 0
-              for cmd, pairs in commands:
-                  for b, e in pairs:
-                      if e > max_block:
-                          max_block = e
+              max_block = max((e for _, pairs in commands for _, e in pairs), default=0)
               with open(output_img, 'wb') as out_f, open(new_dat, 'rb') as dat_f:
                   out_f.truncate(max_block * BLOCK_SIZE)
                   for cmd, pairs in commands:
@@ -149,80 +148,75 @@ jobs:
           EOF
           python3 ~/tools/make_red_bootanim.py
 
-      - name: Step 4 - Direct API Download Base ROM and SuperSU
+      - name: Step 4 - Lightweight Headless WebView Download Base ROM and SuperSU
         run: |
-          mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt ~/supersu
-          cat << 'EOF' > ~/tools/afh_api_dl.py
-          import sys, requests
+          mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt ~/supersu/extracted
+          cat << 'EOF' > ~/tools/afh_webview_dl.py
+          import os, sys, time, requests
+          from playwright.sync_api import sync_playwright
 
           fid = "745425885120710285"
+          target_url = f"https://androidfilehost.com/?fid={fid}"
           save_path = "/home/runner/rom_work/base_rom.zip"
+
+          # إعدادات متصفح خفيف جداً على الرام (تعطيل الصور والخطوط والوسائط)
+          browser_args = [
+              "--no-sandbox",
+              "--disable-dev-shm-usage",
+              "--disable-gpu",
+              "--disable-extensions",
+              "--disable-background-networking",
+              "--disable-sync",
+              "--disable-default-apps",
+              "--mute-audio",
+              "--no-first-run",
+              "--single-process"
+          ]
+
+          print("Launching lightweight headless WebView...")
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True, args=browser_args)
+              context = browser.new_context(
+                  user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                  accept_downloads=True
+              )
+              page = context.new_page()
+
+              # حظر تحميل الصور والأنماط لتقليل استهلاك الرام وتسريع الصفحة
+              page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
+
+              print(f"Navigating to {target_url} ...")
+              page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+
+              # انتظار ظهور زر التحميل الرئيسي والضغط عليه
+              print("Waiting for primary download button...")
+              dl_btn = page.locator("#download-btn, button:has-text('Click Here to Start Download'), a:has-text('Click Here to Start Download')").first
+              dl_btn.wait_for(state="visible", timeout=30000)
+              dl_btn.click()
+              print("Clicked primary download button. Waiting for mirrors to generate...")
+
+              # انتظار ظهور روابط السيرفرات المباشرة بعد الضغط على الزر
+              page.wait_for_selector("#mirrors a[href^='http']", timeout=45000)
+              mirror_elements = page.locator("#mirrors a[href^='http']").all()
+              mirror_urls = [el.get_attribute("href") for el in mirror_elements if el.get_attribute("href")]
+
+              # استخراج الكوكيز من الـ WebView لاستخدامها في التحميل السريع
+              cookies = {c['name']: c['value'] for c in context.cookies()}
+              browser.close()
+              print("WebView closed to free RAM. Mirrors found:", len(mirror_urls))
+
+          if not mirror_urls:
+              print("ERROR: No mirror links generated after button click.")
+              sys.exit(1)
+
           session = requests.Session()
+          session.cookies.update(cookies)
           headers = {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-              "Referer": "https://androidfilehost.com" + fid,
-              "X-Requested-With": "XMLHttpRequest"
+              "Referer": target_url
           }
 
-          print("Requesting mirror list from AFH API...")
-          session.get("https://androidfilehost.com" + fid, headers=headers, timeout=30)
-          resp = session.post(
-              "https://androidfilehost.com",
-              data={"submit": "submit", "action": "getdownloadmirrors", "fid": fid},
-              headers=headers,
-              timeout=30
-          )
-
-          data = resp.json()
-          mirrors = data.get("MIRRORS", list())
-          print("Mirrors found:", len(mirrors))
-
           downloaded = False
-          for m in mirrors:
-              dl_url = m.get("url")
-              if not dl_url:
-                  continue
+          for dl_url in mirror_urls:
               print("Downloading from mirror:", dl_url)
               try:
-                  with session.get(dl_url, headers=headers, stream=True, timeout=60) as r:
-                      if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", ""):
-                          with open(save_path, "wb") as f:
-                              for chunk in r.iter_content(chunk_size=1048576):
-                                  if chunk:
-                                      f.write(chunk)
-                          downloaded = True
-                          print("Download completed successfully!")
-                          break
-              except Exception as e:
-                  print("Mirror failed:", e)
-
-          if not downloaded:
-              print("ERROR: All mirrors failed.")
-              sys.exit(1)
-          EOF
-
-          python3 ~/tools/afh_api_dl.py
-          unzip -t ~/rom_work/base_rom.zip
-          unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
-
-          # تحميل حزمة SuperSU v2.82 الرسمية لدمجها في النظام والإعدادات
-          curl -fsSL "https://chainfire.eu" -o ~/supersu/supersu.zip || \
-          curl -fsSL "https://githubusercontent.com" -o /dev/null
-          if test -f ~/supersu/supersu.zip; then
-            unzip -q ~/supersu/supersu.zip -d ~/supersu/extracted || true
-          fi
-
-      - name: Step 5 - Remove Other Device Variants and Keep SM-J500FN Only
-        run: |
-          cd ~/rom_work/extracted
-          if test -d "variants" || test -d "devices"; then
-            find . -type f \( -iname "*j5nlte*" -o -iname "*j500fn*" \) -exec cp {} . \; || true
-            rm -rf variants devices
-          fi
-          find . -maxdepth 3 \( -iname "*j5lte*" -o -iname "*j53g*" -o -iname "*j5ltechn*" -o -iname "*j5ylte*" -o -iname "*j500f*" -o -iname "*j500g*" -o -iname "*j500h*" -o -iname "*j500m*" \) ! -iname "*j5nlte*" ! -iname "*j500fn*" -exec rm -rf {} + || true
-          find . -maxdepth 2 -type f \( -iname "*.txt" -o -iname "*.md" -o -iname "changelog*" \) -exec rm -f {} + || true
-
-      - name: Step 6 - Unpack System Image and Inject SuperSU Root
-        run: |
-          cd ~/rom_work/extracted
-          if test -f "system.new.dat"; then
