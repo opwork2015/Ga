@@ -1,4 +1,4 @@
-name: Rename visible CyanogenMod text to DyanogenMod
+name: Measure ROM size (report only)
 
 on:
   workflow_dispatch:
@@ -9,62 +9,34 @@ on:
         type: string
 
 jobs:
-  rename:
+  measure:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y zip unzip curl
-
       - name: Download base zip
         run: |
           curl -L --fail -o base.zip "${{ inputs.base_zip_url }}"
-          unzip -tq base.zip
-          mkdir -p rom && unzip -q base.zip -d rom
-          test -f rom/META-INF/com/google/android/update-binary || (echo "::error::update-binary missing" && exit 1)
+          ls -lh base.zip
+          unzip -q base.zip -d rom
 
-      - name: Update build.prop text (visible values only)
+      - name: Report size per folder
         run: |
-          if [ -f rom/system/build.prop ]; then
-            sed -i \
-              -e 's/^ro\.build\.display\.id=.*/ro.build.display.id=dyanogenmod v3.0/' \
-              -e 's/^ro\.modversion=.*/ro.modversion=dyanogenmod-v3.0/' \
-              -e 's/^ro\.lineage\.display\.version=.*/ro.lineage.display.version=dyanogenmod v3.0/' \
-              -e 's/^ro\.cm\.display\.version=.*/ro.cm.display.version=dyanogenmod v3.0/' \
-              rom/system/build.prop
-          fi
+          echo "=== Top folders ==="
+          du -sh rom/* | sort -hr
+          echo "=== system subfolders ==="
+          du -sh rom/system/* 2>/dev/null | sort -hr | head -30
+          echo "=== Largest files ==="
+          find rom -type f -printf "%s %p\n" | sort -nr | head -40 | awk '{printf "%.1f MB  %s\n", $1/1048576, $2}'
 
-      - name: Rename text in string resources of standalone apps
+      - name: Save report
         run: |
-          # يعدّل نصوص strings.xml داخل APK فقط بعد فكّه، ولا يلمس أسماء الحزم
-          find rom/system -name "*.apk" | while read apk; do
-            name=$(basename "$apk" .apk)
-            case "$name" in
-              CMUpdater|CyanogenSetupWizard)
-                mkdir -p /tmp/x && rm -rf /tmp/x/*
-                unzip -q "$apk" -d /tmp/x
-                if [ -f /tmp/x/res/values/strings.xml ]; then
-                  sed -i 's/CyanogenMod/DyanogenMod/g; s/Cyanogen/Dyanogen/g' /tmp/x/res/values/strings.xml
-                fi
-                echo "Text updated in $name (APK rebuild needed separately)"
-                ;;
-            esac
-          done
-
-      - name: Apply overlay
-        run: |
-          if [ -d overlay ]; then cp -r overlay/. rom/; fi
-
-      - name: Pack zip
-        run: |
-          mkdir -p out
-          cd rom && zip -qr -0 ../out/dyanogenmod-v3.0-J500FN.zip . && cd ..
-          ls -lh out
+          du -ah rom | sort -hr | head -200 > report.txt
+          find rom -type f -printf "%s %p\n" | sort -nr | head -200 > files.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dyanogenmod-v3.0-J500FN
-          path: out/
+          name: size-report
+          path: |
+            report.txt
+            files.txt
