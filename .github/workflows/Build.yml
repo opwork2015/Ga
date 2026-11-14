@@ -3,10 +3,10 @@ name: Build Custom DyanogenMod ROM (SM-J500FN)
 on:
   workflow_dispatch:
     inputs:
-      base_rom_url:
-        description: 'رابط الروم الأساسي (اتركه كما هو للتحميل التلقائي)'
-        required: false
-        default: 'https://archive.org'
+      rom_page_url:
+        description: 'رابط صفحة الروم (AndroidFileHost أو MediaFire أو رابط مباشر)'
+        required: true
+        default: 'https://androidfilehost.com'
       rom_version:
         description: 'إصدار الروم (ROM Version)'
         required: true
@@ -16,26 +16,112 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install Repack & APK Tools (تثبيت أدوات البناء وتعديل التطبيقات)
+      - name: Install Repack Tools, APKTool & Headless Firefox
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 git wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg p7zip-full default-jre apksigner
-          git clone https://github.com ~/sdat2img
-          git clone https://github.com ~/img2sdat
-          sudo wget -O /usr/local/bin/apktool.jar https://bitbucket.org
-          sudo bash -c 'echo -e "#!/bin/bash\njava -jar /usr/local/bin/apktool.jar \"\$@\"" > /usr/local/bin/apktool'
+          sudo apt-get install -y python3 python3-pip curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg p7zip-full default-jre apksigner
+          
+          # تثبيت متصفح Firefox الآلي لتخطي صفحات التحميل تلقائياً
+          pip3 install playwright
+          playwright install firefox
+          playwright install-deps firefox
+
+          # تحميل أدوات فك وضغط الصور من الروابط الرسمية الخام
+          mkdir -p ~/tools
+          curl -fsSL "https://githubusercontent.com" -o ~/tools/sdat2img.py
+          curl -fsSL "https://githubusercontent.com" -o ~/tools/img2sdat.py
+          curl -fsSL "https://githubusercontent.com" -o ~/tools/blockimgdiff.py
+          curl -fsSL "https://githubusercontent.com" -o ~/tools/common.py
+          curl -fsSL "https://githubusercontent.com" -o ~/tools/rangelib.py
+          curl -fsSL "https://githubusercontent.com" -o ~/tools/sparse_img.py
+
+          # تحميل أداة تعديل التطبيقات apktool
+          sudo curl -fsSL "https://github.com" -o /usr/local/bin/apktool.jar
+          sudo bash -c 'printf "#!/bin/bash\njava -jar /usr/local/bin/apktool.jar \"\$@\"\n" > /usr/local/bin/apktool'
           sudo chmod +x /usr/local/bin/apktool
 
-      - name: Download Base CM-13.0 ROM for SM-J500FN
+      - name: Download Base ROM via Headless Firefox (تحميل الروم عبر متصفح فايرفوكس الآلي)
         run: |
           mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          wget -O ~/rom_work/base_rom.zip "${{ github.event.inputs.base_rom_url }}"
+          cat << 'EOF' > ~/tools/auto_download.py
+          import sys
+          import time
+          from playwright.sync_api import sync_playwright
+
+          url = sys.argv[1]
+          save_path = sys.argv[2]
+
+          with sync_playwright() as p:
+              browser = p.firefox.launch(headless=True)
+              context = browser.new_context(
+                  accept_downloads=True,
+                  user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+              )
+              page = context.new_page()
+              print(f"Opening page: {url}")
+
+              download_started = False
+
+              def handle_download(download):
+                  global download_started
+                  download_started = True
+                  print(f"Downloading file: {download.suggested_filename}...")
+                  download.save_as(save_path)
+                  print("Download finished successfully!")
+
+              page.on("download", handle_download)
+
+              try:
+                  page.goto(url, timeout=60000, wait_until="domcontentloaded")
+              except Exception as e:
+                  print(f"Navigation triggered download directly: {e}")
+
+              # محاولة الضغط على أزرار التحميل الشائعة في صفحات الاستضافة (مثل AndroidFileHost)
+              time.sleep(5)
+              selectors = [
+                  "button#btn-download",
+                  "a#download_btn",
+                  "a.btn-download",
+                  "button:has-text('Download')",
+                  "a:has-text('Click here to start download')",
+                  "a:has-text('Primary Download')",
+                  "#dl-link"
+              ]
+
+              for _ in range(15):
+                  if download_started:
+                      break
+                  for sel in selectors:
+                      try:
+                          el = page.locator(sel).first
+                          if el.is_visible(timeout=1000):
+                              print(f"Clicking download button: {sel}")
+                              el.click()
+                              break
+                      except Exception:
+                          pass
+                  time.sleep(3)
+
+              # انتظار اكتمال التنزيل إذا بدأ
+              wait_count = 0
+              while not download_started and wait_count < 30:
+                  time.sleep(2)
+                  wait_count += 1
+
+              browser.close()
+              if not download_started:
+                  print("ERROR: Could not trigger download automatically from this page.")
+                  sys.exit(1)
+          EOF
+
+          python3 ~/tools/auto_download.py "${{ github.event.inputs.rom_page_url }}" ~/rom_work/base_rom.zip
+          unzip -t ~/rom_work/base_rom.zip
           unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
 
       - name: Unpack System Image (فك ملفات النظام)
         run: |
           cd ~/rom_work/extracted
-          python3 ~/sdat2img/sdat2img.py system.transfer.list system.new.dat ~/rom_work/system.img
+          python3 ~/tools/sdat2img.py system.transfer.list system.new.dat ~/rom_work/system.img
           sudo mount -o loop,rw ~/rom_work/system.img ~/rom_work/system_mnt
 
       - name: Rename App Packages to com.dyanogenmod.xxx (تغيير أسماء الحزم)
@@ -43,11 +129,9 @@ jobs:
           SYS_DIR=~/rom_work/system_mnt
           mkdir -p ~/apk_mod/keys
           
-          # إنشاء مفتاح توقيع للتطبيقات المعدلة
           keytool -genkey -v -keystore ~/apk_mod/keys/rom.keystore -alias romkey -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass 123456 -keypass 123456 -dname "CN=opwork2015, OU=Dev, O=DyanogenMod, L=Cairo, S=EG, C=EG"
 
-          # قائمة التطبيقات القابلة لتغيير اسم الحزمة بأمان دون كسر النظام
           TARGET_APPS=(
             "$SYS_DIR/app/Browser/Browser.apk"
             "$SYS_DIR/app/Eleven/Eleven.apk"
@@ -66,7 +150,6 @@ jobs:
               rm -rf ~/apk_mod/work
               apktool d -f "$APK_PATH" -o ~/apk_mod/work
               
-              # تغيير اسم الحزمة داخل AndroidManifest.xml إلى com.dyanogenmod.xxx
               sed -i 's/package="com\.cyanogenmod\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
               sed -i 's/package="com\.android\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
               sed -i 's/package="org\.cyanogenmod\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
@@ -78,13 +161,12 @@ jobs:
             fi
           done
 
-      - name: Customize ROM & Inject Tweaks (تخصيص اسم الروم والتحسينات)
+      - name: Customize ROM & Inject Tweaks (تخصيص الروم والتحسينات)
         run: |
           ROM_NAME="${{ github.event.repository.name }}"
           ROM_VER="${{ github.event.inputs.rom_version }}"
           SYS_DIR=~/rom_work/system_mnt
 
-          # تغيير اسم الروم واسم المطور في build.prop مع الإبقاء على كل التطبيقات
           sudo sed -i "s/^ro.build.display.id=.*/ro.build.display.id=${ROM_NAME} ${ROM_VER}/g" $SYS_DIR/build.prop
           sudo sed -i "s/^ro.cm.version=.*/ro.cm.version=${ROM_NAME}-${ROM_VER}-j5nltexx/g" $SYS_DIR/build.prop
           sudo sed -i "s/^ro.modversion=.*/ro.modversion=${ROM_NAME}-${ROM_VER}/g" $SYS_DIR/build.prop
@@ -111,12 +193,11 @@ jobs:
           ring.delay=0
           EOF"
 
-          # إضافة متجر F-Droid بجانب التطبيقات الموجودة
           sudo mkdir -p $SYS_DIR/app/FDroid
-          sudo wget -O $SYS_DIR/app/FDroid/FDroid.apk https://f-droid.org
+          sudo curl -fsSL "https://f-droid.org" -o $SYS_DIR/app/FDroid/FDroid.apk
           sudo chmod 644 $SYS_DIR/app/FDroid/FDroid.apk
 
-      - name: Repack System & Create Flashable ZIP (إعادة بناء الروم المضغوط)
+      - name: Repack System & Create Flashable ZIP
         run: |
           ROM_NAME="${{ github.event.repository.name }}"
           ROM_VER="${{ github.event.inputs.rom_version }}"
@@ -126,7 +207,7 @@ jobs:
           cd ~/rom_work/extracted
           rm -f system.new.dat system.transfer.list system.patch.dat
           
-          python3 ~/img2sdat/img2sdat.py ~/rom_work/system.img -o ~/rom_work/extracted -v 3
+          python3 ~/tools/img2sdat.py ~/rom_work/system.img -o ~/rom_work/extracted -v 3
 
           cat << EOF > META-INF/com/google/android/updater-script
           ui_print("========================================");
@@ -139,31 +220,3 @@ jobs:
           unmount("/system");
           format("ext4", "EMMC", "/dev/block/bootdevice/by-name/system", "0", "/system");
           ui_print("Installing ${ROM_NAME} system...");
-          block_image_update("/dev/block/bootdevice/by-name/system", package_extract_file("system.transfer.list"), "system.new.dat", "system.patch.dat");
-          show_progress(0.050000, 5);
-          ui_print("Flashing boot kernel...");
-          package_extract_file("boot.img", "/dev/block/bootdevice/by-name/boot");
-          show_progress(0.200000, 10);
-          ui_print("Done! Rebooting...");
-          set_progress(1.000000);
-          EOF
-
-          mkdir -p ~/output
-          zip -r9 ~/output/$OUT_ZIP .
-
-      - name: Save ROM inside Action Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.repository.name }}-${{ github.event.inputs.rom_version }}-SM-J500FN
-          path: ~/output/*.zip
-          retention-days: 30
-
-      - name: Upload Finished ROM to GitHub Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.rom_version }}-${{ github.run_number }}
-          name: "${{ github.event.repository.name }} ${{ github.event.inputs.rom_version }} (SM-J500FN)"
-          body: "روم مخصص مبني على CM-13.0 لهاتف Samsung Galaxy J5 (SM-J500FN) بواسطة opwork2015."
-          files: ~/output/*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
