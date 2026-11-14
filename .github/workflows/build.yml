@@ -1,76 +1,91 @@
-name: Build Micro DyanogenMod (DM) Holo Red ROM
+name: Auto Build dyanogenmod v3.0 (DM) Holo Red ROM
 
 on:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
   workflow_dispatch:
-    inputs:
-      afh_file_id:
-        description: 'رقم ملف AndroidFileHost (FID)'
-        required: true
-        default: '745425885120710285'
-      rom_version:
-        description: 'إصدار الروم (ROM Version)'
-        required: true
-        default: 'v1.0'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install Tools & Headless Firefox
+      - name: Set Cairo Timezone and Build Timestamp
+        id: meta
+        run: |
+          sudo timedatectl set-timezone Africa/Cairo
+          BUILD_TAG=$(date +"%Y%m%d-%H%M")
+          BUILD_DATE_STR=$(date +"%a %b %d %H:%M:%S %Z %Y")
+          BUILD_UTC=$(date +%s)
+          echo "build_tag=$BUILD_TAG" >> $GITHUB_OUTPUT
+          echo "build_date_str=$BUILD_DATE_STR" >> $GITHUB_OUTPUT
+          echo "build_utc=$BUILD_UTC" >> $GITHUB_OUTPUT
+          echo "Build Timestamp: $BUILD_DATE_STR"
+
+      - name: Install Build Tools and Headless Firefox
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-pil fonts-dejavu-core curl wget unzip zip brotli \
-            android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full \
-            default-jre apktool apksigner xz-utils
+          sudo apt-get install -y python3 python3-pip python3-pil fonts-dejavu-core curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full default-jre apktool apksigner xz-utils
           pip3 install playwright
           playwright install firefox
           playwright install-deps firefox
 
-      - name: Create Unpack Tool & DyanogenMod Red Bootanimation
+      - name: Create Unpack Tool and dyanogenmod v3.0 Red Bootanimation
         run: |
           mkdir -p ~/tools
           cat << 'EOF' > ~/tools/sdat2img.py
-          #!/usr/bin/env python3
           import sys
 
           def rangeset(src):
-              src_set = src.split(',')
-              num_set = [int(item) for item in src_set]
-              return tuple([(num_set[i], num_set[i+1]) for i in range(1, len(num_set), 2)])
+              parts = src.split(',')
+              nums = list(map(int, parts))
+              res = []
+              i = 1
+              while i < len(nums):
+                  res.append((nums.pop(1), nums.pop(1)))
+              return res
 
           def parse_transfer_list(path):
               with open(path, 'r') as f:
-                  version = int(f.readline())
-                  new_blocks = int(f.readline())
+                  version = int(f.readline().strip())
+                  new_blocks = int(f.readline().strip())
                   if version >= 2:
                       f.readline()
                       f.readline()
                   commands = []
                   for line in f:
-                      parts = line.strip().split(' ')
-                      if parts in ['erase', 'new', 'zero']:
-                          commands.append([parts, rangeset(parts)])
+                      tokens = line.strip().split(' ')
+                      cmd = tokens.pop(0)
+                      if cmd in ('erase', 'new', 'zero'):
+                          commands.append((cmd, rangeset(tokens.pop(0))))
               return version, new_blocks, commands
 
-          def main(transfer_list, new_dat, output_img):
+          def main():
+              args = list(sys.argv)
+              args.pop(0)
+              transfer_list = args.pop(0)
+              new_dat = args.pop(0)
+              output_img = args.pop(0)
               BLOCK_SIZE = 4096
               version, new_blocks, commands = parse_transfer_list(transfer_list)
+              max_block = 0
+              for cmd, pairs in commands:
+                  for b, e in pairs:
+                      if e > max_block:
+                          max_block = e
               with open(output_img, 'wb') as out_f, open(new_dat, 'rb') as dat_f:
-                  all_blocks = [item for cmd in commands for item in cmd]
-                  max_block = max(pair for pair in all_blocks)
                   out_f.truncate(max_block * BLOCK_SIZE)
-                  for cmd in commands:
+                  for cmd, pairs in commands:
                       if cmd == 'new':
-                          for begin, end in cmd:
+                          for begin, end in pairs:
                               block_count = end - begin
                               out_f.seek(begin * BLOCK_SIZE)
                               out_f.write(dat_f.read(block_count * BLOCK_SIZE))
               print("Unpacked system.img successfully.")
 
           if __name__ == '__main__':
-              main(sys.argv, sys.argv, sys.argv)
+              main()
           EOF
-          chmod +x ~/tools/sdat2img.py
 
           cat << 'EOF' > ~/tools/make_red_bootanim.py
           import os, zipfile
@@ -98,29 +113,29 @@ jobs:
               cx, cy = W // 2, H // 2 - 80
 
               glow_r = 210 + int(18 * (frame_idx / max(1, total_frames - 1)))
-              draw.ellipse([cx - glow_r, cy - 160, cx + glow_r, cy + 160], outline=DARK_RED, width=6)
+              draw.ellipse((cx - glow_r, cy - 160, cx + glow_r, cy + 160), outline=DARK_RED, width=6)
 
-              draw.line([(cx - 110, cy - 110), (cx - 165, cy - 210)], fill=RED, width=22)
-              draw.line([(cx + 110, cy - 110), (cx + 165, cy - 210)], fill=RED, width=22)
-              draw.ellipse([cx - 176, cy - 221, cx - 154, cy - 199], fill=RED)
-              draw.ellipse([cx + 154, cy - 221, cx + 176, cy - 199], fill=RED)
+              draw.line(((cx - 110, cy - 110), (cx - 165, cy - 210)), fill=RED, width=22)
+              draw.line(((cx + 110, cy - 110), (cx + 165, cy - 210)), fill=RED, width=22)
+              draw.ellipse((cx - 176, cy - 221, cx - 154, cy - 199), fill=RED)
+              draw.ellipse((cx + 154, cy - 221, cx + 176, cy - 199), fill=RED)
 
-              draw.rounded_rectangle([cx - 190, cy - 130, cx + 190, cy + 130], radius=75, fill=RED)
+              draw.rounded_rectangle((cx - 190, cy - 130, cx + 190, cy + 130), radius=75, fill=RED)
 
-              draw.ellipse([cx - 125, cy - 45, cx - 45, cy + 35], fill=WHITE)
-              draw.ellipse([cx + 45, cy - 45, cx + 125, cy + 35], fill=WHITE)
+              draw.ellipse((cx - 125, cy - 45, cx - 45, cy + 35), fill=WHITE)
+              draw.ellipse((cx + 45, cy - 45, cx + 125, cy + 35), fill=WHITE)
 
-              draw.pieslice([cx - 28, cy + 55, cx + 28, cy + 95], start=0, end=180, fill=WHITE)
+              draw.pieslice((cx - 28, cy + 55, cx + 28, cy + 95), start=0, end=180, fill=WHITE)
 
-              title_text = "DyanogenMod"
+              title_text = "dyanogenmod v3.0"
               bbox = draw.textbbox((0, 0), title_text, font=font_title)
-              tw = bbox[2] - bbox[0]
-              draw.text(((W - tw) // 2, cy + 210), title_text, fill=RED, font=font_title)
+              x0, y0, x1, y1 = bbox
+              draw.text(((W - (x1 - x0)) // 2, cy + 210), title_text, fill=RED, font=font_title)
 
-              sub_text = "DM HOLO RED EDITION"
+              sub_text = "DM HOLO RED EDITION - BY IBLAST"
               sbbox = draw.textbbox((0, 0), sub_text, font=font_sub)
-              sw = sbbox[2] - sbbox[0]
-              draw.text(((W - sw) // 2, cy + 280), sub_text, fill=WHITE, font=font_sub)
+              sx0, sy0, sx1, sy1 = sbbox
+              draw.text(((W - (sx1 - sx0)) // 2, cy + 280), sub_text, fill=WHITE, font=font_sub)
 
               return img
 
@@ -137,25 +152,24 @@ jobs:
 
           with zipfile.ZipFile("/tmp/bootanimation.zip", "w", compression=zipfile.ZIP_STORED) as zf:
               zf.write("/tmp/bootanim/desc.txt", "desc.txt")
-              for folder in ["part0", "part1"]:
+              for folder in ("part0", "part1"):
                   for fn in sorted(os.listdir(f"/tmp/bootanim/{folder}")):
                       zf.write(f"/tmp/bootanim/{folder}/{fn}", f"{folder}/{fn}")
-          print("DyanogenMod Red bootanimation.zip created!")
+          print("dyanogenmod v3.0 Red bootanimation.zip created!")
           EOF
           python3 ~/tools/make_red_bootanim.py
 
-      - name: Download Base ROM from AndroidFileHost via Firefox
+      - name: Auto Download Base ROM via Firefox
         run: |
           mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          FID="${{ github.event.inputs.afh_file_id }}"
-          TARGET_URL="https://androidfilehost.com{FID}"
-
           cat << 'EOF' > ~/tools/afh_download.py
           import sys, time
           from playwright.sync_api import sync_playwright
 
-          url = sys.argv[1]
-          save_path = sys.argv[2]
+          base = "https://androidfilehost.com"
+          query = "?fid=745425885120710285"
+          url = base + query
+          save_path = "/home/runner/rom_work/base_rom.zip"
 
           with sync_playwright() as p:
               browser = p.firefox.launch(headless=True)
@@ -164,38 +178,38 @@ jobs:
                   user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
               )
               page = context.new_page()
-              print(f"Opening exact URL: {url}")
+              print("Opening URL:", url)
               download_started = False
 
               def handle_download(download):
                   global download_started
                   download_started = True
-                  print(f"Downloading: {download.suggested_filename}...")
+                  print("Downloading:", download.suggested_filename)
                   download.save_as(save_path)
                   print("Download finished!")
 
               page.on("download", handle_download)
-              page.goto(url, timeout=60000, wait_until="networkidle")
-              time.sleep(3)
+              page.goto(url, timeout=60000, wait_until="domcontentloaded")
+              time.sleep(5)
 
               start_btn = page.locator("a:has-text('Click Here to Start Download'), button#btn-download").first
-              if start_btn.is_visible(timeout=10000):
-                  print("Clicking 'Click Here to Start Download'...")
+              if start_btn.is_visible(timeout=15000):
+                  print("Clicking start download button...")
                   start_btn.click()
 
               time.sleep(8)
-              mirror_links = page.locator("#mirrors a, a[href*='://androidfilehost.com']")
+              mirror_links = page.locator("#mirrors a, a.btn-primary, a[href*='/dl/']")
               count = mirror_links.count()
-              print(f"Found {count} mirror links.")
+              print("Found mirrors:", count)
               for i in range(count):
                   if download_started:
                       break
                   try:
-                      print(f"Trying mirror {i+1}...")
+                      print("Trying mirror:", i + 1)
                       mirror_links.nth(i).click(timeout=5000)
-                      time.sleep(5)
+                      time.sleep(6)
                   except Exception as e:
-                      print(f"Mirror {i+1} skipped: {e}")
+                      print("Mirror skipped:", e)
 
               wait_count = 0
               while not download_started and wait_count < 60:
@@ -204,28 +218,22 @@ jobs:
 
               browser.close()
               if not download_started:
-                  print("ERROR: Failed to trigger download from AFH mirrors.")
+                  print("ERROR: Download did not start.")
                   sys.exit(1)
           EOF
 
-          python3 ~/tools/afh_download.py "$TARGET_URL" ~/rom_work/base_rom.zip
+          python3 ~/tools/afh_download.py
           unzip -t ~/rom_work/base_rom.zip
           unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
 
-      - name: Keep Only SM-J500FN (j5nltexx) Files & Unpack System
+      - name: Strip Other Devices and Extra Developer Docs
         run: |
           cd ~/rom_work/extracted
-          if [ -d "variants" ] || [ -d "devices" ]; then
+          if test -d "variants" || test -d "devices"; then
             find . -type f \( -iname "*j5nlte*" -o -iname "*j500fn*" \) -exec cp {} . \; || true
             rm -rf variants devices
           fi
           find . -maxdepth 3 \( -iname "*j5lte*" -o -iname "*j53g*" -o -iname "*j5ltechn*" -o -iname "*j5ylte*" -o -iname "*j500f*" -o -iname "*j500g*" -o -iname "*j500h*" -o -iname "*j500m*" \) ! -iname "*j5nlte*" ! -iname "*j500fn*" -exec rm -rf {} + || true
+          find . -maxdepth 2 -type f \( -iname "*.txt" -o -iname "*.md" -o -iname "changelog*" \) -exec rm -f {} + || true
 
-          if [ -f "system.new.dat" ]; then
-            python3 ~/tools/sdat2img.py system.transfer.list system.new.dat ~/rom_work/system.img
-          elif [ -f "system.img" ]; then
-            simg2img system.img ~/rom_work/system.img || cp system.img ~/rom_work/system.img
-          fi
-          sudo mount -o loop,rw ~/rom_work/system.img ~/rom_work/system_mnt
-
-          SYS_DIR=~/rom_work/system_mnt
+          if test -f "system.new.dat"; then
