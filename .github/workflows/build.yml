@@ -26,7 +26,7 @@ jobs:
 
       - name: Step 3 - Download CyanogenMod Bootanimation and Tint Red
         run: |
-          mkdir -p ~/tools /tmp/rom_work /rom_build/META-INF/com/google/android
+          mkdir -p ~/tools ~/rom_work ~/rom_build/META-INF/com/google/android
           cat << 'EOF' > ~/tools/fetch_and_red_bootanim.py
           import os, zipfile, requests
           from PIL import Image, ImageDraw
@@ -149,7 +149,6 @@ jobs:
           mkdir -p ~/rom_build/META-INF/com/google/android
           mkdir -p ~/rom_build/system/app ~/rom_build/system/priv-app ~/rom_build/system/media ~/rom_build/system/etc/init.d ~/rom_build/system/xbin
 
-          # إنشاء ملف updater-script لتفليش الروم عبر الريكفري
           cat << 'EOF' > ~/rom_build/META-INF/com/google/android/updater-script
           ui_print("*****************************************");
           ui_print("   dyanogenmod v3.0 - Holo Classic       ");
@@ -170,7 +169,6 @@ jobs:
           touch ~/rom_build/META-INF/com/google/android/update-binary
           chmod +x ~/rom_build/META-INF/com/google/android/update-binary
 
-          # تخصيص وتعديل build.prop بالكامل للمطور iblast
           BUILD_DATE="${{ steps.meta.outputs.build_date_str }}"
           cat << EOF > ~/rom_build/system/build.prop
           # begin build properties for dyanogenmod v3.0 by iblast
@@ -197,7 +195,6 @@ jobs:
           # end build properties
           EOF
 
-          # نسخ وتعديل التطبيقات لتصبح تحت الحزمة com.dyanogenmod.*
           if test -d system/app; then
             cp -rf system/app/* ~/rom_build/system/app/ || true
           fi
@@ -205,12 +202,10 @@ jobs:
             cp -rf system/priv-app/* ~/rom_build/system/priv-app/ || true
           fi
 
-          # دمج ثيم الإقلاع الأحمر
           if test -f /tmp/bootanimation.zip; then
             cp /tmp/bootanimation.zip ~/rom_build/system/media/bootanimation.zip
           fi
 
-          # إدراج أدوات الروت المتنوعة وملف su في xbin
           touch ~/rom_build/system/xbin/su
           chmod 6755 ~/rom_build/system/xbin/su || true
 
