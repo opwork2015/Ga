@@ -1,12 +1,12 @@
-name: Build Custom DyanogenMod ROM (SM-J500FN)
+name: Build Micro DyanogenMod ROM (SM-J500FN Only)
 
 on:
   workflow_dispatch:
     inputs:
-      rom_page_url:
-        description: 'رابط صفحة الروم (AndroidFileHost أو MediaFire أو رابط مباشر)'
+      afh_file_id:
+        description: 'رقم ملف AndroidFileHost (FID)'
         required: true
-        default: 'https://androidfilehost.com'
+        default: '745425885120710285'
       rom_version:
         description: 'إصدار الروم (ROM Version)'
         required: true
@@ -16,28 +16,26 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install Tools & Headless Firefox (تثبيت الأدوات من النظام بدون روابط خارجية)
+      - name: Install Tools & Headless Firefox
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 python3-pip curl wget unzip zip brotli \
             android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full \
-            default-jre apktool apksigner
+            default-jre apktool apksigner xz-utils
           pip3 install playwright
           playwright install firefox
           playwright install-deps firefox
 
-      - name: Create Built-in Unpack Tool (إنشاء أداة فك النظام محلياً)
+      - name: Create Built-in Unpack Tool
         run: |
           mkdir -p ~/tools
           cat << 'EOF' > ~/tools/sdat2img.py
           #!/usr/bin/env python3
-          import sys, os
+          import sys
 
           def rangeset(src):
               src_set = src.split(',')
               num_set = [int(item) for item in src_set]
-              if len(num_set) != num_set[0] + 1:
-                  raise ValueError(f"Error parsing data: {src}")
               return tuple([(num_set[i], num_set[i+1]) for i in range(1, len(num_set), 2)])
 
           def parse_transfer_list(path):
@@ -49,10 +47,9 @@ jobs:
                       f.readline()
                   commands = []
                   for line in f:
-                      line = line.split(' ')
-                      cmd = line[0]
-                      if cmd in ['erase', 'new', 'zero']:
-                          commands.append([cmd, rangeset(line[1])])
+                      parts = line.strip().split(' ')
+                      if parts[0] in ['erase', 'new', 'zero']:
+                          commands.append([parts[0], rangeset(parts[1])])
               return version, new_blocks, commands
 
           def main(transfer_list, new_dat, output_img):
@@ -68,17 +65,20 @@ jobs:
                               block_count = end - begin
                               out_f.seek(begin * BLOCK_SIZE)
                               out_f.write(dat_f.read(block_count * BLOCK_SIZE))
-              print("Done! Unpacked system.img successfully.")
+              print("Unpacked system.img successfully.")
 
           if __name__ == '__main__':
               main(sys.argv[1], sys.argv[2], sys.argv[3])
           EOF
           chmod +x ~/tools/sdat2img.py
 
-      - name: Download Base ROM via Headless Firefox
+      - name: Download Base ROM from AndroidFileHost via Firefox
         run: |
           mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          cat << 'EOF' > ~/tools/auto_download.py
+          FID="${{ github.event.inputs.afh_file_id }}"
+          TARGET_URL="https://androidfilehost.com{FID}"
+
+          cat << 'EOF' > ~/tools/afh_download.py
           import sys, time
           from playwright.sync_api import sync_playwright
 
@@ -92,7 +92,7 @@ jobs:
                   user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
               )
               page = context.new_page()
-              print(f"Opening page: {url}")
+              print(f"Opening exact URL: {url}")
               download_started = False
 
               def handle_download(download):
@@ -100,143 +100,33 @@ jobs:
                   download_started = True
                   print(f"Downloading: {download.suggested_filename}...")
                   download.save_as(save_path)
-                  print("Download complete!")
+                  print("Download finished!")
 
               page.on("download", handle_download)
+              page.goto(url, timeout=60000, wait_until="networkidle")
+              time.sleep(3)
 
-              try:
-                  page.goto(url, timeout=60000, wait_until="domcontentloaded")
-              except Exception as e:
-                  print(f"Direct download triggered: {e}")
+              start_btn = page.locator("a:has-text('Click Here to Start Download'), button#btn-download").first
+              if start_btn.is_visible(timeout=10000):
+                  print("Clicking 'Click Here to Start Download'...")
+                  start_btn.click()
 
-              time.sleep(5)
-              selectors = [
-                  "button#btn-download",
-                  "a#download_btn",
-                  "a.btn-download",
-                  "button:has-text('Download')",
-                  "a:has-text('Click here to start download')",
-                  "a:has-text('Primary Download')",
-                  "#dl-link"
-              ]
-
-              for _ in range(15):
+              time.sleep(8)
+              mirror_links = page.locator("#mirrors a, a[href*='://androidfilehost.com']")
+              count = mirror_links.count()
+              print(f"Found {count} mirror links.")
+              for i in range(count):
                   if download_started:
                       break
-                  for sel in selectors:
-                      try:
-                          el = page.locator(sel).first
-                          if el.is_visible(timeout=1000):
-                              print(f"Clicking: {sel}")
-                              el.click()
-                              break
-                      except Exception:
-                          pass
-                  time.sleep(3)
+                  try:
+                      print(f"Trying mirror {i+1}...")
+                      mirror_links.nth(i).click(timeout=5000)
+                      time.sleep(5)
+                  except Exception as e:
+                      print(f"Mirror {i+1} skipped: {e}")
 
               wait_count = 0
-              while not download_started and wait_count < 30:
-                  time.sleep(2)
-                  wait_count += 1
+              while not download_started and wait_count  $SYS_DIR/build.prop
 
-              browser.close()
-              if not download_started:
-                  print("ERROR: Download did not start automatically.")
-                  sys.exit(1)
-          EOF
-
-          python3 ~/tools/auto_download.py "${{ github.event.inputs.rom_page_url }}" ~/rom_work/base_rom.zip
-          unzip -t ~/rom_work/base_rom.zip
-          unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
-
-      - name: Unpack System Image
-        run: |
-          cd ~/rom_work/extracted
-          python3 ~/tools/sdat2img.py system.transfer.list system.new.dat ~/rom_work/system.img
-          sudo mount -o loop,rw ~/rom_work/system.img ~/rom_work/system_mnt
-
-      - name: Rename App Packages to com.dyanogenmod.xxx
-        run: |
-          SYS_DIR=~/rom_work/system_mnt
-          mkdir -p ~/apk_mod/keys
-          
-          keytool -genkey -v -keystore ~/apk_mod/keys/rom.keystore -alias romkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass 123456 -keypass 123456 -dname "CN=opwork2015, OU=Dev, O=DyanogenMod, L=Cairo, S=EG, C=EG"
-
-          TARGET_APPS=(
-            "$SYS_DIR/app/Browser/Browser.apk"
-            "$SYS_DIR/app/Eleven/Eleven.apk"
-            "$SYS_DIR/app/Gallery2/Gallery2.apk"
-            "$SYS_DIR/app/Snap/Snap.apk"
-            "$SYS_DIR/app/Email/Email.apk"
-            "$SYS_DIR/app/CMWallpapers/CMWallpapers.apk"
-            "$SYS_DIR/priv-app/Screencast/Screencast.apk"
-            "$SYS_DIR/priv-app/AudioFX/AudioFX.apk"
-          )
-
-          for APK_PATH in "${TARGET_APPS[@]}"; do
-            if [ -f "$APK_PATH" ]; then
-              APP_NAME=$(basename "$APK_PATH" .apk)
-              echo "Modifying package name for $APP_NAME..."
-              rm -rf ~/apk_mod/work
-              apktool d -f "$APK_PATH" -o ~/apk_mod/work
-              
-              sed -i 's/package="com\.cyanogenmod\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
-              sed -i 's/package="com\.android\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
-              sed -i 's/package="org\.cyanogenmod\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
-              
-              apktool b ~/apk_mod/work -o ~/apk_mod/unsigned.apk
-              apksigner sign --ks ~/apk_mod/keys/rom.keystore --ks-pass pass:123456 --key-pass pass:123456 --out ~/apk_mod/signed.apk ~/apk_mod/unsigned.apk
-              sudo cp ~/apk_mod/signed.apk "$APK_PATH"
-              sudo chmod 644 "$APK_PATH"
-            fi
-          done
-
-      - name: Customize ROM & Inject Tweaks
-        run: |
-          ROM_NAME="${{ github.event.repository.name }}"
-          ROM_VER="${{ github.event.inputs.rom_version }}"
-          SYS_DIR=~/rom_work/system_mnt
-
-          sudo sed -i "s/^ro.build.display.id=.*/ro.build.display.id=${ROM_NAME} ${ROM_VER}/g" $SYS_DIR/build.prop
-          sudo sed -i "s/^ro.cm.version=.*/ro.cm.version=${ROM_NAME}-${ROM_VER}-j5nltexx/g" $SYS_DIR/build.prop
-          sudo sed -i "s/^ro.modversion=.*/ro.modversion=${ROM_NAME}-${ROM_VER}/g" $SYS_DIR/build.prop
-          sudo sed -i "s/^ro.build.user=.*/ro.build.user=opwork2015/g" $SYS_DIR/build.prop
-
-          sudo bash -c "cat << EOF >> $SYS_DIR/build.prop
-
-          # ==========================================
-          # ${ROM_NAME} ${ROM_VER} - By opwork2015
-          # ==========================================
+          # ${ROM_NAME} ${ROM_VER} (SM-J500FN Only) - By opwork2015
           ro.config.low_ram=true
-          ro.sys.fw.bg_apps_limit=16
-          persist.sys.purgeable_assets=1
-          debug.sf.hw=1
-          debug.performance.tuning=1
-          video.accelerate.hw=1
-          windowsmgr.max_events_per_sec=150
-          ro.max.fling_velocity=12000
-          ro.min.fling_velocity=8000
-          ro.ril.disable.power.collapse=0
-          pm.sleep_mode=1
-          wifi.supplicant_scan_interval=180
-          ro.telephony.call_ring.delay=0
-          ring.delay=0
-          EOF"
-
-      - name: Repack System & Create Flashable ZIP
-        run: |
-          ROM_NAME="${{ github.event.repository.name }}"
-          ROM_VER="${{ github.event.inputs.rom_version }}"
-          OUT_ZIP="${ROM_NAME}-${ROM_VER}-SM-J500FN.zip"
-
-          sudo umount ~/rom_work/system_mnt
-          cd ~/rom_work/extracted
-          rm -f system.new.dat system.transfer.list system.patch.dat
-          
-          # ضغط صورة النظام بصيغة Sparse مدعومة في TWRP مباشرة
-          img2simg ~/rom_work/system.img system.img
-
-          cat << EOF > META-INF/com/google/android/updater-script
-          ui_print("========================================");
- 
