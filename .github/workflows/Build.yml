@@ -31,8 +31,7 @@ jobs:
             openjdk-8-jdk python-is-python3 wget
           sudo update-java-alternatives -s java-1.8.0-openjdk-amd64
           mkdir -p ~/bin
-          curl -fsSL https://googlesource.com | base64 -d > ~/bin/repo || true
-          if [ ! -s ~/bin/repo ]; then cp /usr/bin/repo ~/bin/repo; fi
+          cp /usr/bin/repo ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
@@ -41,6 +40,7 @@ jobs:
           git config --global user.name "opwork2015"
           git config --global user.email "honorhazem98@gmail.com"
           git config --global color.ui false
+          git config --global url."https://github.com".insteadOf "git://://github.com"
           sudo swapoff -a || true
           sudo rm -f /swapfile
           sudo fallocate -l 12G /swapfile2
@@ -52,7 +52,7 @@ jobs:
         run: |
           mkdir -p ~/android/cm13
           cd ~/android/cm13
-          ~/bin/repo init -u https://github.com -b cm-13.0 --depth=1
+          ~/bin/repo init -u https://github.comLineageOS/android.git -b cm-13.0 --depth=1 --git-lfs
 
       - name: Add SM-J500FN (j5nltexx) Trees & Strip Heavy Prebuilts
         run: |
@@ -72,6 +72,7 @@ jobs:
             <remove-project name="platform/prebuilts/python/darwin-x86/2.7.5" />
             <remove-project name="platform/cts" />
 
+            <!-- تعريفات هاتف Samsung Galaxy J5 (SM-J500FN / j5nltexx) -->
             <project name="LineageOS/android_device_samsung_j5nltexx" path="device/samsung/j5nltexx" remote="github" revision="cm-13.0" />
             <project name="LineageOS/android_device_samsung_j5-common" path="device/samsung/j5-common" remote="github" revision="cm-13.0" />
             <project name="LineageOS/android_device_samsung_msm8916-common" path="device/samsung/msm8916-common" remote="github" revision="cm-13.0" />
@@ -84,7 +85,7 @@ jobs:
       - name: Sync Source Code
         run: |
           cd ~/android/cm13
-          ~/bin/repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle
+          ~/bin/repo sync -c -j4 --force-sync --no-tags --no-clone-bundle
 
       - name: Apply Custom Branding, Debloat & Low-RAM Tweaks
         run: |
@@ -132,14 +133,14 @@ jobs:
           lunch cm_j5nltexx-userdebug
           mka bacon -j$(nproc)
 
-      - name: Save ROM inside Action Artifacts (تنزيل مباشر من صفحة الـ Action)
+      - name: Save ROM inside Action Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.repository.name }}-${{ github.event.inputs.rom_version }}-SM-J500FN
           path: ~/android/cm13/out/target/product/j5nltexx/*.zip
           retention-days: 30
 
-      - name: Upload Finished ROM to GitHub Releases (تنزيل من قسم الإصدارات)
+      - name: Upload Finished ROM to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.rom_version }}-${{ github.run_number }}
