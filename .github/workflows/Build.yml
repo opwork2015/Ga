@@ -3,12 +3,8 @@ name: Build Custom CM-13.0 ROM (SM-J500FN)
 on:
   workflow_dispatch:
     inputs:
-      rom_name:
-        description: 'Your Custom ROM Name'
-        required: true
-        default: 'MyCustomCM13'
       rom_version:
-        description: 'ROM Version'
+        description: 'إصدار الروم (ROM Version)'
         required: true
         default: 'v1.0'
 
@@ -41,13 +37,15 @@ jobs:
 
       - name: Configure Git & Swap Space
         run: |
-          git config --global user.name "CustomROMBuilder"
-          git config --global user.email "builder@customrom.local"
+          git config --global user.name "opwork2015"
+          git config --global user.email "honorhazem98@gmail.com"
           git config --global color.ui false
-          sudo fallocate -l 12G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 12G /swapfile2
+          sudo chmod 600 /swapfile2
+          sudo mkswap /swapfile2
+          sudo swapon /swapfile2
 
       - name: Initialize Shallow CM-13.0 Source
         run: |
@@ -61,7 +59,7 @@ jobs:
           cat << 'EOF' > ~/android/cm13/.repo/local_manifests/roomservice.xml
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <!-- Remove macOS toolchains & CTS to save 15GB+ -->
+            <!-- حذف ملفات الماك والاختبارات لتوفير أكثر من 15 جيجابايت -->
             <remove-project name="platform/prebuilts/clang/darwin-x86/host/3.6" />
             <remove-project name="platform/prebuilts/gcc/darwin-x86/aarch64/aarch64-linux-android-4.9" />
             <remove-project name="platform/prebuilts/gcc/darwin-x86/arm/arm-eabi-4.8" />
@@ -74,7 +72,7 @@ jobs:
             <remove-project name="platform/prebuilts/python/darwin-x86/2.7.5" />
             <remove-project name="platform/cts" />
 
-            <!-- Samsung Galaxy J5 (SM-J500FN / j5nltexx) Device, Kernel & Vendor -->
+            <!-- تعريفات هاتف Samsung Galaxy J5 (SM-J500FN / j5nltexx) -->
             <project name="LineageOS/android_device_samsung_j5nltexx" path="device/samsung/j5nltexx" remote="github" revision="cm-13.0" />
             <project name="LineageOS/android_device_samsung_j5-common" path="device/samsung/j5-common" remote="github" revision="cm-13.0" />
             <project name="LineageOS/android_device_samsung_msm8916-common" path="device/samsung/msm8916-common" remote="github" revision="cm-13.0" />
@@ -92,15 +90,18 @@ jobs:
       - name: Apply Custom Branding, Debloat & Low-RAM Tweaks
         run: |
           cd ~/android/cm13
+          ROM_NAME="${{ github.event.repository.name }}"
+          ROM_VER="${{ github.event.inputs.rom_version }}"
           
-          # 1. Rebrand ROM name inside CM common configuration
-          sed -i "s/CM_VERSION :=.*/CM_VERSION := ${{ github.event.inputs.rom_name }}-${{ github.event.inputs.rom_version }}-j5nltexx/g" vendor/cm/config/common.mk
+          # 1. تسمية الروم باسم المستودع تلقائياً
+          sed -i "s/CM_VERSION :=.*/CM_VERSION := ${ROM_NAME}-${ROM_VER}-j5nltexx/g" vendor/cm/config/common.mk
           
-          # 2. Inject Low-RAM, Speed, and Battery tweaks into device system.prop
-          cat << 'EOF' >> device/samsung/j5nltexx/system.prop
+          # 2. إضافة تحسينات الرام الخفيف والسرعة واسم المطور
+          cat << EOF >> device/samsung/j5nltexx/system.prop
           
-          # Custom ROM Performance & Low-RAM Tweaks
-          ro.build.display.id=${{ github.event.inputs.rom_name }} ${{ github.event.inputs.rom_version }}
+          # Custom ROM Branding & Tweaks
+          ro.build.display.id=${ROM_NAME} ${ROM_VER}
+          ro.build.user=opwork2015
           ro.config.low_ram=true
           ro.sys.fw.bg_apps_limit=16
           persist.sys.purgeable_assets=1
@@ -115,7 +116,7 @@ jobs:
           ring.delay=0
           EOF
 
-          # 3. Remove heavy unneeded CM apps from build list to keep ROM tiny
+          # 3. حذف التطبيقات الثقيلة لتخفيف حجم الروم
           sed -i '/Browser/d;/Eleven/d;/CMWallpapers/d;/CMAccount/d;/CMBugReport/d;/Screencast/d' vendor/cm/config/common.mk
 
       - name: Download Lightweight F-Droid Store APK
@@ -139,8 +140,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.rom_version }}-${{ github.run_number }}
-          name: "${{ github.event.inputs.rom_name }} ${{ github.event.inputs.rom_version }} (SM-J500FN)"
-          body: "Automated custom CM-13.0 ROM build for Samsung Galaxy J5 (SM-J500FN / j5nltexx)."
+          name: "${{ github.event.repository.name }} ${{ github.event.inputs.rom_version }} (SM-J500FN)"
+          body: "بناء تلقائي لروم ${{ github.event.repository.name }} لهاتف Samsung Galaxy J5 (SM-J500FN / j5nltexx) بواسطة opwork2015."
           files: ~/android/cm13/out/target/product/j5nltexx/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
