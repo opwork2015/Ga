@@ -196,10 +196,10 @@ jobs:
               content += "ro.rom.developer=iblast\n"
               content += "ro.rom.name=dyanogenmod\n"
               content += "ro.rom.version=v3.0\n"
-              content += "persist.sys.root_access=3\n"  # تفعيل الروت داخل إعدادات المطور (Settings -> Root Access)
+              content += "persist.sys.root_access=3\n"
               content += "ro.secure=0\n"
               content += "ro.debuggable=1\n"
-              content += "ro.ui.implementation=holo_classic\n" # ثيم Holo الكلاسيكي
+              content += "ro.ui.implementation=holo_classic\n"
               
               with open(build_prop, "w") as f:
                   f.write(content)
@@ -229,7 +229,6 @@ jobs:
             sudo chmod 644 ~/rom_work/system_mnt/system/media/bootanimation.zip
           fi
 
-          # إدراج أدوات الروت المدمجة ومتنوعة في جذور النظام (بدون تطبيق خارجي)
           sudo mkdir -p ~/rom_work/system_mnt/xbin ~/rom_work/system_mnt/bin ~/rom_work/system_mnt/etc/init.d
           sudo touch ~/rom_work/system_mnt/xbin/su
           sudo chmod 6755 ~/rom_work/system_mnt/xbin/su || true
@@ -333,148 +332,6 @@ jobs:
           </html>
           EOF
           cp ~/final_rom/dyanogenmod-v3.0-J500FN-iblast-Classic.zip ~/output_web/
-
-      - name: Step 9 - Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dyanogenmod-v3.0-J500FN-iblast-ROM
-          path: ~/output_web/
-dated with iblast signature.")
-          EOF
-          sudo python3 ~/tools/modify_root.py
-
-          # تعديل الحزم في النظام وإعادة توقيع التطبيقات لتصبح تحت com.dyanogenmod.app
-          cat << 'EOF' > ~/tools/rename_packages.py
-          import os, subprocess
-
-          sys_dir = "/home/runner/rom_work/system_mnt"
-          for app_type in ["app", "priv-app"]:
-              target_dir = os.path.join(sys_dir, app_type)
-              if os.path.exists(target_dir):
-                  for root, dirs, files in os.walk(target_dir):
-                      for file in files:
-                          if file.endswith(".apk"):
-                              apk_path = os.path.join(root, file)
-                              app_name = file.replace(".apk", "").lower()
-                              new_pkg = f"com.dyanogenmod.{app_name}"
-                              print(f"Configuring app {file} package to {new_pkg}")
-                              os.chmod(apk_path, 0o777)
-          EOF
-          sudo python3 ~/tools/rename_packages.py
-
-          # دمج شاشة الإقلاع الحمراء (Bootanimation)
-          if test -f /tmp/bootanimation.zip; then
-            sudo mkdir -p ~/rom_work/system_mnt/media ~/rom_work/system_mnt/system/media
-            sudo cp /tmp/bootanimation.zip ~/rom_work/system_mnt/system/media/bootanimation.zip
-            sudo chmod 644 ~/rom_work/system_mnt/system/media/bootanimation.zip
-          fi
-
-          # دمج SuperSU وتثبيت السكربتات الجذرية
-          if test -d ~/supersu/extracted/common; then
-            sudo mkdir -p ~/rom_work/system_mnt/xbin ~/rom_work/system_mnt/app/Superuser
-            sudo cp ~/supersu/extracted/common/su.apk ~/rom_work/system_mnt/app/Superuser/Superuser.apk || true
-            sudo chmod 644 ~/rom_work/system_mnt/app/Superuser/Superuser.apk || true
-          fi
-
-          sudo umount ~/rom_work/system_mnt || true
-
-      - name: Step 7 - Create Final Flashable ROM Zip Package
-        run: |
-          mkdir -p ~/final_rom
-          cd ~/rom_work/extracted
-          zip -r9 ~/final_rom/dyanogenmod-v3.0-J500FN-iblast-SuperSU.zip .
-          cd ~/final_rom
-          md5sum dyanogenmod-v3.0-J500FN-iblast-SuperSU.zip > dyanogenmod-v3.0-J500FN-iblast-SuperSU.zip.md5
-
-      - name: Step 8 - Generate Ultra-Lightweight Red WebView HTML Page with iblast Signature
-        run: |
-          mkdir -p ~/output_web
-          cat << 'EOF' > ~/output_web/index.html
-          <!DOCTYPE html>
-          <html lang="ar" dir="rtl">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>dyanogenmod v3.0 - iblast</title>
-              <style>
-                  * { box-sizing: border-box; }
-                  body {
-                      background-color: #0d0d0d;
-                      color: #ffffff;
-                      font-family: sans-serif;
-                      text-align: center;
-                      padding: 15px;
-                      margin: 0;
-                  }
-                  .card {
-                      max-width: 380px;
-                      margin: 30px auto;
-                      background: #181818;
-                      border: 2px solid #e51414;
-                      border-radius: 14px;
-                      padding: 20px;
-                      box-shadow: 0 0 20px rgba(229, 20, 20, 0.3);
-                  }
-                  .cid-svg {
-                      width: 90px;
-                      height: 90px;
-                      fill: #e51414;
-                  }
-                  h1 { color: #e51414; font-size: 21px; margin: 10px 0 5px 0; }
-                  p { color: #aaa; font-size: 13px; margin-bottom: 10px; }
-                  .dev-badge {
-                      color: #ff3333;
-                      font-weight: bold;
-                      font-size: 14px;
-                      margin-bottom: 12px;
-                  }
-                  .btn {
-                      display: block;
-                      width: 100%;
-                      background-color: #e51414;
-                      color: #fff;
-                      padding: 14px 0;
-                      font-size: 16px;
-                      font-weight: bold;
-                      text-decoration: none;
-                      border-radius: 8px;
-                      border: none;
-                      cursor: pointer;
-                  }
-                  .btn:active { background-color: #990000; }
-                  .pkg-info {
-                      font-family: monospace;
-                      background: #050505;
-                      color: #00ff66;
-                      padding: 6px;
-                      font-size: 11px;
-                      border-radius: 4px;
-                      margin-bottom: 15px;
-                  }
-              </style>
-          </head>
-          <body>
-              <div class="card">
-                  <svg class="cid-svg" viewBox="0 0 100 100">
-                      <rect x="20" y="30" width="60" height="50" rx="15" fill="#e51414" />
-                      <circle cx="37" cy="50" r="8" fill="#ffffff" />
-                      <circle cx="63" cy="50" r="8" fill="#ffffff" />
-                      <path d="M 40 65 Q 50 75 60 65" stroke="#ffffff" stroke-width="3" fill="none" />
-                      <line x1="35" y1="30" x2="20" y2="10" stroke="#e51414" stroke-width="5" stroke-linecap="round" />
-                      <line x1="65" y1="30" x2="80" y2="10" stroke="#e51414" stroke-width="5" stroke-linecap="round" />
-                      <circle cx="20" cy="10" r="3" fill="#e51414" />
-                      <circle cx="80" cy="10" r="3" fill="#e51414" />
-                  </svg>
-                  <h1>dyanogenmod v3.0</h1>
-                  <div class="dev-badge">Developed by iblast</div>
-                  <p>Holo Classic Red • SuperSU Root • SM-J500FN</p>
-                  <div class="pkg-info">com.dyanogenmod.app</div>
-                  <a href="./dyanogenmod-v3.0-J500FN-iblast-SuperSU.zip" class="btn">تنزيل الروم الجاهز (.ZIP)</a>
-              </div>
-          </body>
-          </html>
-          EOF
-          cp ~/final_rom/dyanogenmod-v3.0-J500FN-iblast-SuperSU.zip ~/output_web/
 
       - name: Step 9 - Upload Artifacts
         uses: actions/upload-artifact@v4
