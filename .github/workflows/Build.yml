@@ -41,6 +41,7 @@ jobs:
           git config --global user.email "honorhazem98@gmail.com"
           git config --global color.ui false
           git config --global url."https://github.com".insteadOf "git://://github.com"
+          git config --global url."https://github.comLineageOS-archive/".insteadOf "https://github.comLineageOS/"
           sudo swapoff -a || true
           sudo rm -f /swapfile
           sudo fallocate -l 12G /swapfile2
@@ -52,7 +53,7 @@ jobs:
         run: |
           mkdir -p ~/android/cm13
           cd ~/android/cm13
-          ~/bin/repo init -u https://github.comLineageOS/android.git -b cm-13.0 --depth=1 --git-lfs
+          ~/bin/repo init -u https://github.comLineageOS-archive/android.git -b cm-13.0 --depth=1 --no-repo-verify
 
       - name: Add SM-J500FN (j5nltexx) Trees & Strip Heavy Prebuilts
         run: |
@@ -73,11 +74,11 @@ jobs:
             <remove-project name="platform/cts" />
 
             <!-- تعريفات هاتف Samsung Galaxy J5 (SM-J500FN / j5nltexx) -->
-            <project name="LineageOS/android_device_samsung_j5nltexx" path="device/samsung/j5nltexx" remote="github" revision="cm-13.0" />
-            <project name="LineageOS/android_device_samsung_j5-common" path="device/samsung/j5-common" remote="github" revision="cm-13.0" />
-            <project name="LineageOS/android_device_samsung_msm8916-common" path="device/samsung/msm8916-common" remote="github" revision="cm-13.0" />
-            <project name="LineageOS/android_device_samsung_qcom-common" path="device/samsung/qcom-common" remote="github" revision="cm-13.0" />
-            <project name="LineageOS/android_kernel_samsung_msm8916" path="kernel/samsung/msm8916" remote="github" revision="cm-13.0" />
+            <project name="LineageOS-archive/android_device_samsung_j5nltexx" path="device/samsung/j5nltexx" remote="github" revision="cm-13.0" />
+            <project name="LineageOS-archive/android_device_samsung_j5-common" path="device/samsung/j5-common" remote="github" revision="cm-13.0" />
+            <project name="LineageOS-archive/android_device_samsung_msm8916-common" path="device/samsung/msm8916-common" remote="github" revision="cm-13.0" />
+            <project name="LineageOS-archive/android_device_samsung_qcom-common" path="device/samsung/qcom-common" remote="github" revision="cm-13.0" />
+            <project name="LineageOS-archive/android_kernel_samsung_msm8916" path="kernel/samsung/msm8916" remote="github" revision="cm-13.0" />
             <project name="TheMuppets/proprietary_vendor_samsung" path="vendor/samsung" remote="github" revision="cm-13.0" />
           </manifest>
           EOF
