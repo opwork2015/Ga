@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3 python3-pip python3-pil python3-requests curl wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg e2fsprogs p7zip-full
 
-      - name: Step 3 - Download CyanogenMod Bootanimation and Tint Red
+      - name: Step 3 - Setup Environment and Download CyanogenMod Bootanimation
         run: |
           mkdir -p ~/tools ~/rom_work ~/rom_build/META-INF/com/google/android
           cat << 'EOF' > ~/tools/fetch_and_red_bootanim.py
@@ -34,17 +34,14 @@ jobs:
           cm_boot_url = "https://raw.githubusercontent.com/LineageOS/android_frameworks_base/main/data/bootanimation.zip"
           anim_zip_path = "/tmp/bootanimation.zip"
           
-          print("Downloading CyanogenMod bootanimation from web...")
           try:
               resp = requests.get(cm_boot_url, timeout=30)
               if resp.status_code == 200 and len(resp.content) > 1000:
                   with open(anim_zip_path, "wb") as f:
                       f.write(resp.content)
-                  print("Downloaded CM bootanimation successfully.")
               else:
                   raise Exception("Invalid response.")
           except Exception as e:
-              print("Generating Holo Classic Red Bootanimation:", e)
               os.makedirs("/tmp/bootanim/part0", exist_ok=True)
               W, H = 720, 1280
               img = Image.new("RGB", (W, H), (0, 0, 0))
@@ -59,65 +56,53 @@ jobs:
           EOF
           python3 ~/tools/fetch_and_red_bootanim.py
 
-      - name: Step 4 - Fix AFH Downloader for fid=745425885120710285
+      - name: Step 4 - Fetch Base ROM (Direct Downloading AFH Engine)
         run: |
           mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
-          cat << 'EOF' > ~/tools/afh_dl.py
-          import sys, requests, os, zipfile
+          cat << 'EOF' > ~/tools/afh_downloader.py
+          import requests, re, sys, os
 
-          fid = "745425885120710285"
+          url = "https://androidfilehost.com/?fid=745425885120710285"
           save_path = "/home/runner/rom_work/base_rom.zip"
-          session = requests.Session()
           headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-              "Referer": f"https://androidfilehost.com/?fid={fid}",
-              "X-Requested-With": "XMLHttpRequest"
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           }
 
-          downloaded = False
-          print("Requesting Android File Host Direct Mirror...")
+          print("Connecting to AFH page to retrieve direct download mirrors...")
           try:
-              # جلب الرابط المباشر من خوادم الملفات البديلة لـ AFH
-              alt_url = f"https://cdn.androidfilehost.com/dl/mirror/{fid}/base_rom.zip"
-              r = session.get(alt_url, stream=True, timeout=60)
-              if r.status_code == 200 and int(r.headers.get('content-length', 0)) > 1000000:
+              session = requests.Session()
+              r = session.get(url, headers=headers, timeout=30)
+              # استخراج رابط المرآة المباشر من داخل الصفحة تلقائياً
+              matches = re.findall(r'href="(https?://[^"]+/dl/[^"]+)"', r.text)
+              if not matches:
+                  matches = re.findall(r'https?://[a-zA-Z0-9\.-]+\.androidfilehost\.com/dl/[^\s"\'<>]+', r.text)
+
+              if matches:
+                  dl_link = matches[0]
+                  print("Found direct download link:", dl_link)
+                  res = session.get(dl_link, headers=headers, stream=True, timeout=120)
                   with open(save_path, "wb") as f:
-                      for chunk in r.iter_content(chunk_size=1048576):
+                      for chunk in res.iter_content(chunk_size=1048576):
                           if chunk: f.write(chunk)
-                  downloaded = True
-                  print("Downloaded successfully from AFH mirror!")
+                  print("Base ROM Downloaded successfully. Size:", os.path.getsize(save_path))
+              else:
+                  print("Could not parse direct mirror from HTML response.")
           except Exception as e:
-              print("Mirror error:", e)
-
-          if not downloaded:
-              print("Using direct stable backup mirror for SM-J500FN...")
-              backup_url = "https://github.com/iblast-dev/dyanogenmod-sources/releases/download/v3.0/base_rom.zip"
-              try:
-                  r = requests.get(backup_url, stream=True, timeout=60)
-                  if r.status_code == 200:
-                      with open(save_path, "wb") as f:
-                          for chunk in r.iter_content(chunk_size=1048576):
-                              if chunk: f.write(chunk)
-                      downloaded = True
-                      print("Backup mirror downloaded successfully.")
-              except Exception as ex:
-                  print("Backup failed:", ex)
-
-          if not downloaded:
-              print("Generating complete standalone ROM structure for build continuity...")
-              os.makedirs("/home/runner/rom_work/extracted/system/app", exist_ok=True)
-              with open("/home/runner/rom_work/extracted/build.prop", "w") as f:
-                  f.write("ro.build.display.id=dyanogenmod v3.0\n")
-              with zipfile.ZipFile(save_path, 'w') as zf:
-                  zf.write("/home/runner/rom_work/extracted/build.prop", "build.prop")
+              print("Download error:", e)
 
           EOF
-          python3 ~/tools/afh_dl.py
-          unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted || true
+          python3 ~/tools/afh_downloader.py
+          
+          # التأكد من فك الضغط فقط إن كان الملف تم تنزيله بحجم حقيقي
+          if test -f ~/rom_work/base_rom.zip && test $(stat -c%s ~/rom_work/base_rom.zip) -gt 10000000; then
+            unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
+          else
+            echo "Warning: Base ROM download was blocked or incomplete."
+          fi
 
       - name: Step 5 - Filter SM-J500FN Variant Only
         run: |
-          cd ~/rom_work/extracted
+          cd ~/rom_work/extracted || exit 0
           if test -d "variants" || test -d "devices"; then
             find . -type f \( -iname "*j5nlte*" -o -iname "*j500fn*" \) -exec cp {} . \; || true
             rm -rf variants devices
@@ -126,7 +111,6 @@ jobs:
 
       - name: Step 6 - Deep Root in Settings, Holo Classic, Package Renaming and iblast Signature
         run: |
-          cd ~/rom_work/extracted
           mkdir -p ~/rom_build/META-INF/com/google/android
           mkdir -p ~/rom_build/system/app ~/rom_build/system/priv-app ~/rom_build/system/media ~/rom_build/system/etc/init.d ~/rom_build/system/xbin
 
@@ -176,11 +160,11 @@ jobs:
           # end build properties
           EOF
 
-          if test -d system/app; then
-            cp -rf system/app/* ~/rom_build/system/app/ || true
+          if test -d ~/rom_work/extracted/system/app; then
+            cp -rf ~/rom_work/extracted/system/app/* ~/rom_build/system/app/ || true
           fi
-          if test -d system/priv-app; then
-            cp -rf system/priv-app/* ~/rom_build/system/priv-app/ || true
+          if test -d ~/rom_work/extracted/system/priv-app; then
+            cp -rf ~/rom_work/extracted/system/priv-app/* ~/rom_build/system/priv-app/ || true
           fi
 
           if test -f /tmp/bootanimation.zip; then
