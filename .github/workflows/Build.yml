@@ -1,8 +1,12 @@
-name: Build Custom CM-13.0 ROM (SM-J500FN)
+name: Build Custom DyanogenMod ROM (SM-J500FN)
 
 on:
   workflow_dispatch:
     inputs:
+      base_rom_url:
+        description: 'رابط الروم الأساسي (اتركه كما هو للتحميل التلقائي)'
+        required: false
+        default: 'https://archive.org'
       rom_version:
         description: 'إصدار الروم (ROM Version)'
         required: true
@@ -12,95 +16,85 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Maximize Cloud Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          sudo apt-get clean
-          df -h
-
-      - name: Install Build Dependencies & Legacy Tools
+      - name: Install Repack & APK Tools (تثبيت أدوات البناء وتعديل التطبيقات)
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
-            git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev \
-            liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
-            libxml2-utils lzop pngcrush repo rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            openjdk-8-jdk python-is-python3 wget
-          sudo update-java-alternatives -s java-1.8.0-openjdk-amd64
-          mkdir -p ~/bin
-          cp /usr/bin/repo ~/bin/repo
-          chmod a+x ~/bin/repo
-          echo "$HOME/bin" >> $GITHUB_PATH
+          sudo apt-get install -y python3 git wget unzip zip brotli android-sdk-libsparse-utils simg2img img2simg p7zip-full default-jre apksigner
+          git clone https://github.com ~/sdat2img
+          git clone https://github.com ~/img2sdat
+          sudo wget -O /usr/local/bin/apktool.jar https://bitbucket.org
+          sudo bash -c 'echo -e "#!/bin/bash\njava -jar /usr/local/bin/apktool.jar \"\$@\"" > /usr/local/bin/apktool'
+          sudo chmod +x /usr/local/bin/apktool
 
-      - name: Configure Git & Swap Space
+      - name: Download Base CM-13.0 ROM for SM-J500FN
         run: |
-          git config --global user.name "opwork2015"
-          git config --global user.email "honorhazem98@gmail.com"
-          git config --global color.ui false
-          git config --global url."https://github.com".insteadOf "git://://github.com"
-          git config --global url."https://github.comLineageOS-archive/".insteadOf "https://github.comLineageOS/"
-          sudo swapoff -a || true
-          sudo rm -f /swapfile
-          sudo fallocate -l 12G /swapfile2
-          sudo chmod 600 /swapfile2
-          sudo mkswap /swapfile2
-          sudo swapon /swapfile2
+          mkdir -p ~/rom_work/extracted ~/rom_work/system_mnt
+          wget -O ~/rom_work/base_rom.zip "${{ github.event.inputs.base_rom_url }}"
+          unzip -q ~/rom_work/base_rom.zip -d ~/rom_work/extracted
 
-      - name: Initialize Shallow CM-13.0 Source
+      - name: Unpack System Image (فك ملفات النظام)
         run: |
-          mkdir -p ~/android/cm13
-          cd ~/android/cm13
-          ~/bin/repo init -u https://github.comLineageOS-archive/android.git -b cm-13.0 --depth=1 --no-repo-verify
+          cd ~/rom_work/extracted
+          python3 ~/sdat2img/sdat2img.py system.transfer.list system.new.dat ~/rom_work/system.img
+          sudo mount -o loop,rw ~/rom_work/system.img ~/rom_work/system_mnt
 
-      - name: Add SM-J500FN (j5nltexx) Trees & Strip Heavy Prebuilts
+      - name: Rename App Packages to com.dyanogenmod.xxx (تغيير أسماء الحزم)
         run: |
-          mkdir -p ~/android/cm13/.repo/local_manifests
-          cat << 'EOF' > ~/android/cm13/.repo/local_manifests/roomservice.xml
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-            <remove-project name="platform/prebuilts/clang/darwin-x86/host/3.6" />
-            <remove-project name="platform/prebuilts/gcc/darwin-x86/aarch64/aarch64-linux-android-4.9" />
-            <remove-project name="platform/prebuilts/gcc/darwin-x86/arm/arm-eabi-4.8" />
-            <remove-project name="platform/prebuilts/gcc/darwin-x86/arm/arm-linux-androideabi-4.9" />
-            <remove-project name="platform/prebuilts/gcc/darwin-x86/host/i686-apple-darwin-4.2.1" />
-            <remove-project name="platform/prebuilts/gcc/darwin-x86/mips/mips64el-linux-android-4.9" />
-            <remove-project name="platform/prebuilts/gcc/darwin-x86/x86/x86_64-linux-android-4.9" />
-            <remove-project name="platform/prebuilts/gdb/darwin-x86" />
-            <remove-project name="platform/prebuilts/go/darwin-x86" />
-            <remove-project name="platform/prebuilts/python/darwin-x86/2.7.5" />
-            <remove-project name="platform/cts" />
+          SYS_DIR=~/rom_work/system_mnt
+          mkdir -p ~/apk_mod/keys
+          
+          # إنشاء مفتاح توقيع للتطبيقات المعدلة
+          keytool -genkey -v -keystore ~/apk_mod/keys/rom.keystore -alias romkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass 123456 -keypass 123456 -dname "CN=opwork2015, OU=Dev, O=DyanogenMod, L=Cairo, S=EG, C=EG"
 
-            <!-- تعريفات هاتف Samsung Galaxy J5 (SM-J500FN / j5nltexx) -->
-            <project name="LineageOS-archive/android_device_samsung_j5nltexx" path="device/samsung/j5nltexx" remote="github" revision="cm-13.0" />
-            <project name="LineageOS-archive/android_device_samsung_j5-common" path="device/samsung/j5-common" remote="github" revision="cm-13.0" />
-            <project name="LineageOS-archive/android_device_samsung_msm8916-common" path="device/samsung/msm8916-common" remote="github" revision="cm-13.0" />
-            <project name="LineageOS-archive/android_device_samsung_qcom-common" path="device/samsung/qcom-common" remote="github" revision="cm-13.0" />
-            <project name="LineageOS-archive/android_kernel_samsung_msm8916" path="kernel/samsung/msm8916" remote="github" revision="cm-13.0" />
-            <project name="TheMuppets/proprietary_vendor_samsung" path="vendor/samsung" remote="github" revision="cm-13.0" />
-          </manifest>
-          EOF
+          # قائمة التطبيقات القابلة لتغيير اسم الحزمة بأمان دون كسر النظام
+          TARGET_APPS=(
+            "$SYS_DIR/app/Browser/Browser.apk"
+            "$SYS_DIR/app/Eleven/Eleven.apk"
+            "$SYS_DIR/app/Gallery2/Gallery2.apk"
+            "$SYS_DIR/app/Snap/Snap.apk"
+            "$SYS_DIR/app/Email/Email.apk"
+            "$SYS_DIR/app/CMWallpapers/CMWallpapers.apk"
+            "$SYS_DIR/priv-app/Screencast/Screencast.apk"
+            "$SYS_DIR/priv-app/AudioFX/AudioFX.apk"
+          )
 
-      - name: Sync Source Code
+          for APK_PATH in "${TARGET_APPS[@]}"; do
+            if [ -f "$APK_PATH" ]; then
+              APP_NAME=$(basename "$APK_PATH" .apk)
+              echo "Modifying package name for $APP_NAME..."
+              rm -rf ~/apk_mod/work
+              apktool d -f "$APK_PATH" -o ~/apk_mod/work
+              
+              # تغيير اسم الحزمة داخل AndroidManifest.xml إلى com.dyanogenmod.xxx
+              sed -i 's/package="com\.cyanogenmod\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
+              sed -i 's/package="com\.android\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
+              sed -i 's/package="org\.cyanogenmod\./package="com.dyanogenmod./g' ~/apk_mod/work/AndroidManifest.xml
+              
+              apktool b ~/apk_mod/work -o ~/apk_mod/unsigned.apk
+              apksigner sign --ks ~/apk_mod/keys/rom.keystore --ks-pass pass:123456 --key-pass pass:123456 --out ~/apk_mod/signed.apk ~/apk_mod/unsigned.apk
+              sudo cp ~/apk_mod/signed.apk "$APK_PATH"
+              sudo chmod 644 "$APK_PATH"
+            fi
+          done
+
+      - name: Customize ROM & Inject Tweaks (تخصيص اسم الروم والتحسينات)
         run: |
-          cd ~/android/cm13
-          ~/bin/repo sync -c -j4 --force-sync --no-tags --no-clone-bundle
-
-      - name: Apply Custom Branding, Debloat & Low-RAM Tweaks
-        run: |
-          cd ~/android/cm13
           ROM_NAME="${{ github.event.repository.name }}"
           ROM_VER="${{ github.event.inputs.rom_version }}"
-          
-          sed -i "s/CM_VERSION :=.*/CM_VERSION := ${ROM_NAME}-${ROM_VER}-j5nltexx/g" vendor/cm/config/common.mk
-          
-          cat << EOF >> device/samsung/j5nltexx/system.prop
-          
-          # Custom ROM Branding & Tweaks
-          ro.build.display.id=${ROM_NAME} ${ROM_VER}
-          ro.build.user=opwork2015
+          SYS_DIR=~/rom_work/system_mnt
+
+          # تغيير اسم الروم واسم المطور في build.prop مع الإبقاء على كل التطبيقات
+          sudo sed -i "s/^ro.build.display.id=.*/ro.build.display.id=${ROM_NAME} ${ROM_VER}/g" $SYS_DIR/build.prop
+          sudo sed -i "s/^ro.cm.version=.*/ro.cm.version=${ROM_NAME}-${ROM_VER}-j5nltexx/g" $SYS_DIR/build.prop
+          sudo sed -i "s/^ro.modversion=.*/ro.modversion=${ROM_NAME}-${ROM_VER}/g" $SYS_DIR/build.prop
+          sudo sed -i "s/^ro.build.user=.*/ro.build.user=opwork2015/g" $SYS_DIR/build.prop
+
+          sudo bash -c "cat << EOF >> $SYS_DIR/build.prop
+
+          # ==========================================
+          # ${ROM_NAME} ${ROM_VER} - By opwork2015
+          # ==========================================
           ro.config.low_ram=true
           ro.sys.fw.bg_apps_limit=16
           persist.sys.purgeable_assets=1
@@ -108,37 +102,60 @@ jobs:
           debug.performance.tuning=1
           video.accelerate.hw=1
           windowsmgr.max_events_per_sec=150
+          ro.max.fling_velocity=12000
+          ro.min.fling_velocity=8000
           ro.ril.disable.power.collapse=0
           pm.sleep_mode=1
           wifi.supplicant_scan_interval=180
           ro.telephony.call_ring.delay=0
           ring.delay=0
+          EOF"
+
+          # إضافة متجر F-Droid بجانب التطبيقات الموجودة
+          sudo mkdir -p $SYS_DIR/app/FDroid
+          sudo wget -O $SYS_DIR/app/FDroid/FDroid.apk https://f-droid.org
+          sudo chmod 644 $SYS_DIR/app/FDroid/FDroid.apk
+
+      - name: Repack System & Create Flashable ZIP (إعادة بناء الروم المضغوط)
+        run: |
+          ROM_NAME="${{ github.event.repository.name }}"
+          ROM_VER="${{ github.event.inputs.rom_version }}"
+          OUT_ZIP="${ROM_NAME}-${ROM_VER}-SM-J500FN.zip"
+
+          sudo umount ~/rom_work/system_mnt
+          cd ~/rom_work/extracted
+          rm -f system.new.dat system.transfer.list system.patch.dat
+          
+          python3 ~/img2sdat/img2sdat.py ~/rom_work/system.img -o ~/rom_work/extracted -v 3
+
+          cat << EOF > META-INF/com/google/android/updater-script
+          ui_print("========================================");
+          ui_print("   Installing ${ROM_NAME} ${ROM_VER}    ");
+          ui_print("   Device: Samsung Galaxy J5 (J500FN)   ");
+          ui_print("   Developer: opwork2015                ");
+          ui_print("========================================");
+          show_progress(0.750000, 0);
+          ui_print("Formatting system...");
+          unmount("/system");
+          format("ext4", "EMMC", "/dev/block/bootdevice/by-name/system", "0", "/system");
+          ui_print("Installing ${ROM_NAME} system...");
+          block_image_update("/dev/block/bootdevice/by-name/system", package_extract_file("system.transfer.list"), "system.new.dat", "system.patch.dat");
+          show_progress(0.050000, 5);
+          ui_print("Flashing boot kernel...");
+          package_extract_file("boot.img", "/dev/block/bootdevice/by-name/boot");
+          show_progress(0.200000, 10);
+          ui_print("Done! Rebooting...");
+          set_progress(1.000000);
           EOF
 
-          sed -i '/Browser/d;/Eleven/d;/CMWallpapers/d;/CMAccount/d;/CMBugReport/d;/Screencast/d' vendor/cm/config/common.mk
-
-      - name: Download Lightweight F-Droid Store APK
-        run: |
-          mkdir -p ~/android/cm13/vendor/cm/prebuilt/common/app/FDroid
-          wget -O ~/android/cm13/vendor/cm/prebuilt/common/app/FDroid/FDroid.apk https://f-droid.org
-          echo 'PRODUCT_COPY_FILES += vendor/cm/prebuilt/common/app/FDroid/FDroid.apk:system/app/FDroid/FDroid.apk' >> ~/android/cm13/device/samsung/j5nltexx/device.mk
-
-      - name: Compile Full Flashable ROM Zip
-        run: |
-          cd ~/android/cm13
-          export USE_CCACHE=1
-          export CCACHE_DIR=~/.ccache
-          ccache -M 5G
-          export ANDROID_JACK_VM_ARGS="-Dfile.encoding=UTF-8 -XX:+TieredCompilation -Xmx4G"
-          source build/envsetup.sh
-          lunch cm_j5nltexx-userdebug
-          mka bacon -j$(nproc)
+          mkdir -p ~/output
+          zip -r9 ~/output/$OUT_ZIP .
 
       - name: Save ROM inside Action Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.repository.name }}-${{ github.event.inputs.rom_version }}-SM-J500FN
-          path: ~/android/cm13/out/target/product/j5nltexx/*.zip
+          path: ~/output/*.zip
           retention-days: 30
 
       - name: Upload Finished ROM to GitHub Releases
@@ -146,7 +163,7 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.rom_version }}-${{ github.run_number }}
           name: "${{ github.event.repository.name }} ${{ github.event.inputs.rom_version }} (SM-J500FN)"
-          body: "بناء تلقائي لروم ${{ github.event.repository.name }} لهاتف Samsung Galaxy J5 (SM-J500FN / j5nltexx) بواسطة opwork2015."
-          files: ~/android/cm13/out/target/product/j5nltexx/*.zip
+          body: "روم مخصص مبني على CM-13.0 لهاتف Samsung Galaxy J5 (SM-J500FN) بواسطة opwork2015."
+          files: ~/output/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
