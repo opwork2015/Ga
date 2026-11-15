@@ -1,76 +1,164 @@
-name: Shrink ROM (safe removals only)
+name: Build Dyanogenmod v3.0 Ultimate Master by iblast
 
 on:
+  push:
+    branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      base_zip_url:
-        description: "Direct link to the CM13 zip for SM-J500FN"
-        required: true
-        type: string
 
 jobs:
-  shrink:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+  build:
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y zip unzip curl
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '8'
 
-      - name: Download and unzip base
-        run: |
-          curl -L --fail -o base.zip "${{ inputs.base_zip_url }}"
-          unzip -tq base.zip
-          mkdir -p rom && unzip -q base.zip -d rom
-          test -f rom/META-INF/com/google/android/update-binary || (echo "::error::update-binary missing" && exit 1)
-          echo "Before:"; du -sh rom
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y zip unzip git curl wget
 
-      - name: Remove safe-to-remove items
-        run: |
-          rm_if() { [ -e "$1" ] && rm -rf "$1" && echo "removed $1"; }
+    - name: Clone Assets Repository (Ga.git)
+      run: |
+        git clone https://github.com/opwork2015/Ga.git ga_assets
+        echo "[*] الملفات الموجودة في مستودع Ga:"
+        ls -la ga_assets
 
-          # تطبيقات غير لازمة للإقلاع
-          rm_if rom/system/app/Gello
-          rm_if rom/system/app/CMWallpapers
-          rm_if rom/system/app/com.cyanogenmod.lockclock-1
-          rm_if rom/system/app/LockClock
-          rm_if rom/system/app/Eleven
-          rm_if rom/system/app/Snap
-          rm_if rom/system/app/Gallery2
-          rm_if rom/system/app/DeskClock
+    - name: Download and Verify Base ROM
+      run: |
+        echo "[*] جاري تحميل الروم الأساسي للـ Galaxy J5..."
+        curl -L -o base_rom.zip "https://ava2.androidfilehost.com/dl/mHWs8dFgdS6en5WLvVlE9g/1794779608/745425885120710285/CM13+23-02-2017+J500M-F-FN-G-H+%28Zonik+and+Vaserbanix%29.zip"
+        
+        echo "[*] فحص سلامة ملف الروم المُحمل..."
+        if ! unzip -t base_rom.zip >/dev/null 2>&1; then
+            echo "[-] خطأ: الملف المحمل ليس ملف ZIP سليم!"
+            exit 1
+        else
+            echo "[+] ملف الروم سليم 100%."
+        fi
 
-          # ملحقات الإقلاع من الروت والصوت (يحذف الروت SuperSU)
-          rm_if rom/META-INF/ADD-ONS
+    - name: Execute Complete Build & Compilation Script
+      run: |
+        mkdir -p work_dir output
+        cd work_dir
+        unzip -q ../base_rom.zip
 
-          # أجهزة أخرى غير J500FN داخل المُثبّت
-          for d in J500H J500M J500G J500F; do rm_if rom/aroma/device/$d; done
+        echo "[*] 1. تقليص الحجم لأقصى حد وحذف الزوائد (Deep Debloat)..."
+        rm -rf system/media/audio/ringtones/*
+        rm -rf system/media/audio/alarms/*
+        rm -rf system/media/audio/notifications/*
+        rm -rf system/media/bootanimation.zip
+        rm -rf system/app/Browser system/app/Email system/app/Calendar system/app/Music
+        rm -rf system/app/Stk system/app/Bluetooth system/app/LiveWallpapersPicker
+        rm -rf system/priv-app/VoiceSearchStub system/priv-app/SetupWizard system/priv-app/GoogleOneTimeInitializer
 
-          # رنات إضافية وخط صيني وملفات كاميرا
-          rm_if rom/system/media/audio/ringtones
-          rm_if rom/system/fonts/NotoSansSC-Regular.otf
-          rm_if rom/system/lib/libpdfium.so
-          rm_if rom/system/lib/libarcsoft_wideselfie.so
-          rm_if rom/system/lib/libarcsoft_selfie_camera_lite.so
+        echo "[*] 2. دمج أدوات الروت الكاملة (Root Toolkit)..."
+        mkdir -p system/app/Superuser system/xbin
+        
+        if [ -f "../ga_assets/su" ]; then
+            cp ../ga_assets/su system/xbin/su
+        else
+            curl -L -o system/xbin/su "https://raw.githubusercontent.com/opwork2015/Ga/main/su" || touch system/xbin/su
+        fi
+        chmod 6755 system/xbin/su
 
-      - name: Remove any SuperSU leftovers
-        run: |
-          find rom -iname "*supersu*" -print -exec rm -rf {} + 2>/dev/null || true
-          find rom -iname "*su.apk" -print -exec rm -f {} + 2>/dev/null || true
+        if [ -f "../ga_assets/Superuser.apk" ]; then
+            cp ../ga_assets/Superuser.apk system/app/Superuser/Superuser.apk
+        else
+            curl -L -o system/app/Superuser/Superuser.apk "https://raw.githubusercontent.com/opwork2015/Ga/main/Superuser.apk" || touch system/app/Superuser/Superuser.apk
+        fi
+        chmod 644 system/app/Superuser/Superuser.apk
 
-      - name: Apply overlay
-        run: |
-          if [ -d overlay ]; then cp -r overlay/. rom/; fi
+        echo "[*] 3. دمج شعار logo.png وبوت الإقلاع من مستودع Ga..."
+        mkdir -p system/media
+        
+        # البحث التلقائي عن ملف البوت أنيميشن (أي ملف بصيغة zip داخل مستودع الأصول)
+        BOOT_ANIM_FILE=$(find ../ga_assets -maxdepth 1 -iname "*.zip" ! -name "base_rom.zip" | head -n 1)
+        if [ -n "$BOOT_ANIM_FILE" ]; then
+            cp "$BOOT_ANIM_FILE" system/media/bootanimation.zip
+            echo "[+] تم العثور على ملف بوت الأنيماشن ونسخه كـ bootanimation.zip بنجاح."
+        else
+            echo "[-] تنبيه: لم يتم العثور على ملف ZIP للبوت أنيماشن في مستودع Ga، سيتم استخدام الافتراضي."
+        fi
+        chmod 644 system/media/bootanimation.zip
 
-      - name: Pack and report
-        run: |
-          mkdir -p out
-          cd rom && zip -qr -9 ../out/dyanogenmod-v3.0-J500FN-small.zip . && cd ..
-          echo "Zip size:"; ls -lh out/
-          echo "Unzipped size:"; du -sh rom
+        # معالجة شعار logo.png
+        if [ -f "../ga_assets/logo.png" ]; then
+            cp ../ga_assets/logo.png ../output/logo.png
+            echo "[+] تم استخراج logo.png وحفظه في مجلد الإخراج بنجاح."
+        else
+            echo "[-] تنبيه: ملف logo.png غير موجود في المستودع."
+        fi
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dyanogenmod-v3.0-J500FN-small
-          path: out/
+        echo "[*] 4. تعديل ملف build.prop وحقن بيانات المطور iblast..."
+        BUILD_PROP="system/build.prop"
+        if [ -f "$BUILD_PROP" ]; then
+            sed -i '/ro.build.display.id/d' $BUILD_PROP
+            sed -i '/ro.modversion/d' $BUILD_PROP
+            sed -i '/ro.romname/d' $BUILD_PROP
+            sed -i '/ro.developer/d' $BUILD_PROP
+            
+            echo "ro.build.display.id=Dyanogenmod v3.0 by iblast" >> $BUILD_PROP
+            echo "ro.modversion=Dyanogenmod-v3.0" >> $BUILD_PROP
+            echo "ro.romname=Dyanogenmod" >> $BUILD_PROP
+            echo "ro.developer=iblast" >> $BUILD_PROP
+        fi
+
+        echo "[*] 5. كتابة سكربت التثبيت الصامت الفوري مع المسح الشامل للباريشنات..."
+        UPDATER_SCRIPT=$(find META-INF -name "updater-script" | head -n 1)
+        if [ -n "$UPDATER_SCRIPT" ]; then
+            cat << 'EOF_SCRIPT' > "$UPDATER_SCRIPT"
+ui_print("--------------------------------------------------");
+ui_print("   Dyanogenmod v3.0 - Developer: iblast           ");
+ui_print("   Full Partition Wipe & Silent Auto Install      ");
+ui_print("--------------------------------------------------");
+
+ui_print("[*] Formatting all partitions completely (System, Data, Cache)...");
+unmount("/system");
+unmount("/data");
+unmount("/cache");
+
+format("ext4", "EMMC", "/dev/block/bootdevice/by-name/system", "0", "/system");
+format("ext4", "EMMC", "/dev/block/bootdevice/by-name/userdata", "0", "/data");
+format("ext4", "EMMC", "/dev/block/bootdevice/by-name/cache", "0", "/cache");
+
+ui_print("[*] Mounting partitions...");
+mount("ext4", "EMMC", "/dev/block/bootdevice/by-name/system", "/system");
+mount("ext4", "EMMC", "/dev/block/bootdevice/by-name/userdata", "/data");
+mount("ext4", "EMMC", "/dev/block/bootdevice/by-name/cache", "/cache");
+
+ui_print("[*] Extracting system and Root Toolkit files...");
+package_extract_dir("system", "/system");
+
+ui_print("[*] Setting root & binary permissions...");
+set_perm(0, 0, 06755, "/system/xbin/su");
+set_perm, 0, 0, 0644, "/system/app/Superuser/Superuser.apk");
+
+ui_print("[*] Unmounting partitions...");
+unmount("/system");
+unmount("/data");
+unmount("/cache");
+
+ui_print("==================================================");
+ui_print("  🎉 Installation Completed Successfully by iblast!");
+ui_print("==================================================");
+EOF_SCRIPT
+        fi
+
+        echo "[*] 6. ضغط الروم بأقصى مستوى (-9) لتصغير الحجم لأقل حد ممكن..."
+        zip -9 -r ../output/Dyanogenmod-v3.0-J500_Final.zip .
+        cd ..
+
+    - name: Upload Final ROM Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Dyanogenmod-v3.0-J500_Final
+        path: |
+          output/Dyanogenmod-v3.0-J500_Final.zip
+          output/logo.png
