@@ -1,4 +1,4 @@
-name: Measure ROM size (report only)
+name: Shrink ROM (safe removals only)
 
 on:
   workflow_dispatch:
@@ -9,34 +9,68 @@ on:
         type: string
 
 jobs:
-  measure:
+  shrink:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
-      - name: Download base zip
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y zip unzip curl
+
+      - name: Download and unzip base
         run: |
           curl -L --fail -o base.zip "${{ inputs.base_zip_url }}"
-          ls -lh base.zip
-          unzip -q base.zip -d rom
+          unzip -tq base.zip
+          mkdir -p rom && unzip -q base.zip -d rom
+          test -f rom/META-INF/com/google/android/update-binary || (echo "::error::update-binary missing" && exit 1)
+          echo "Before:"; du -sh rom
 
-      - name: Report size per folder
+      - name: Remove safe-to-remove items
         run: |
-          echo "=== Top folders ==="
-          du -sh rom/* | sort -hr
-          echo "=== system subfolders ==="
-          du -sh rom/system/* 2>/dev/null | sort -hr | head -30
-          echo "=== Largest files ==="
-          find rom -type f -printf "%s %p\n" | sort -nr | head -40 | awk '{printf "%.1f MB  %s\n", $1/1048576, $2}'
+          rm_if() { [ -e "$1" ] && rm -rf "$1" && echo "removed $1"; }
 
-      - name: Save report
+          # تطبيقات غير لازمة للإقلاع
+          rm_if rom/system/app/Gello
+          rm_if rom/system/app/CMWallpapers
+          rm_if rom/system/app/com.cyanogenmod.lockclock-1
+          rm_if rom/system/app/LockClock
+          rm_if rom/system/app/Eleven
+          rm_if rom/system/app/Snap
+          rm_if rom/system/app/Gallery2
+          rm_if rom/system/app/DeskClock
+
+          # ملحقات الإقلاع من الروت والصوت (يحذف الروت SuperSU)
+          rm_if rom/META-INF/ADD-ONS
+
+          # أجهزة أخرى غير J500FN داخل المُثبّت
+          for d in J500H J500M J500G J500F; do rm_if rom/aroma/device/$d; done
+
+          # رنات إضافية وخط صيني وملفات كاميرا
+          rm_if rom/system/media/audio/ringtones
+          rm_if rom/system/fonts/NotoSansSC-Regular.otf
+          rm_if rom/system/lib/libpdfium.so
+          rm_if rom/system/lib/libarcsoft_wideselfie.so
+          rm_if rom/system/lib/libarcsoft_selfie_camera_lite.so
+
+      - name: Remove any SuperSU leftovers
         run: |
-          du -ah rom | sort -hr | head -200 > report.txt
-          find rom -type f -printf "%s %p\n" | sort -nr | head -200 > files.txt
+          find rom -iname "*supersu*" -print -exec rm -rf {} + 2>/dev/null || true
+          find rom -iname "*su.apk" -print -exec rm -f {} + 2>/dev/null || true
+
+      - name: Apply overlay
+        run: |
+          if [ -d overlay ]; then cp -r overlay/. rom/; fi
+
+      - name: Pack and report
+        run: |
+          mkdir -p out
+          cd rom && zip -qr -9 ../out/dyanogenmod-v3.0-J500FN-small.zip . && cd ..
+          echo "Zip size:"; ls -lh out/
+          echo "Unzipped size:"; du -sh rom
 
       - uses: actions/upload-artifact@v4
         with:
-          name: size-report
-          path: |
-            report.txt
-            files.txt
+          name: dyanogenmod-v3.0-J500FN-small
+          path: out/
