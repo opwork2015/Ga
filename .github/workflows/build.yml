@@ -1,4 +1,4 @@
-name: Build Dyanogenmod v3.0 Ultimate Master by iblast
+name: Build Dyanogenmod v3.0 Master by iblast
 
 on:
   push:
@@ -22,25 +22,41 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y zip unzip git curl wget
+        sudo apt-get install -y zip unzip git curl wget openjdk-8-jdk
+
+    - name: Download Signing Tools & Keys
+      run: |
+        mkdir -p tools
+        curl -L -o tools/signapk.jar "https://github.com/appium/sign/raw/master/vendor/signapk.jar" || true
+        curl -L -o tools/testkey.x509.pem "https://raw.githubusercontent.com/android/platform_build/master/target/product/security/testkey.x509.pem" || true
+        curl -L -o tools/testkey.pk8 "https://raw.githubusercontent.com/android/platform_build/master/target/product/security/testkey.pk8" || true
 
     - name: Clone Assets Repository (Ga.git)
       run: |
-        git clone https://github.com/opwork2015/Ga.git ga_assets
-        echo "[*] الملفات الموجودة في مستودع Ga:"
-        ls -la ga_assets
+        git clone https://github.com/opwork2015/Ga.git ga_assets || mkdir -p ga_assets
+        echo "[*] محتويات مستودع Ga في المجلد الرئيسي:"
+        ls -la ga_assets || true
+
+    - name: Download SuperSU v2.76
+      run: |
+        echo "[*] جاري تحميل SuperSU من الرابط المحدد..."
+        curl -L -o supersu.zip "https://supersuroot.org/downloads/UPDATE-SuperSU-v2.76-20160630161323.zip"
+        mkdir -p supersu_extracted
+        unzip -q supersu.zip -d supersu_extracted
+        echo "[+] تم فك حزمة SuperSU بنجاح."
 
     - name: Download and Verify Base ROM
       run: |
         echo "[*] جاري تحميل الروم الأساسي للـ Galaxy J5..."
-        curl -L -o base_rom.zip "https://ava2.androidfilehost.com/dl/mHWs8dFgdS6en5WLvVlE9g/1794779608/745425885120710285/CM13+23-02-2017+J500M-F-FN-G-H+%28Zonik+and+Vaserbanix%29.zip"
+        # يمكنك استبدال هذا الرابط برابط مباشر لملف الروم إذا انتهى الرابط الحالي
+        ROM_URL="https://ava2.androidfilehost.com/dl/mHWs8dFgdS6en5WLvVlE9g/1794779608/745425885120710285/CM13+23-02-2017+J500M-F-FN-G-H+%28Zonik+and+Vaserbanix%29.zip"
+        curl -L -o base_rom.zip "$ROM_URL" || true
         
-        echo "[*] فحص سلامة ملف الروم المُحمل..."
-        if ! unzip -t base_rom.zip >/dev/null 2>&1; then
-            echo "[-] خطأ: الملف المحمل ليس ملف ZIP سليم!"
+        if [ ! -f "base_rom.zip" ] || ! unzip -t base_rom.zip >/dev/null 2>&1; then
+            echo "[-] خطأ: فشل تحميل الروم أو أن الرابط منتهي الصلاحية."
             exit 1
         else
-            echo "[+] ملف الروم سليم 100%."
+            echo "[+] تم التحقق من سلامة الروم الأساسي 100%."
         fi
 
     - name: Execute Complete Build & Compilation Script
@@ -58,42 +74,38 @@ jobs:
         rm -rf system/app/Stk system/app/Bluetooth system/app/LiveWallpapersPicker
         rm -rf system/priv-app/VoiceSearchStub system/priv-app/SetupWizard system/priv-app/GoogleOneTimeInitializer
 
-        echo "[*] 2. دمج أدوات الروت الكاملة (Root Toolkit)..."
+        echo "[*] 2. حقق ودمج أدوات الروت بذكاء من حزمة SuperSU..."
         mkdir -p system/app/Superuser system/xbin
         
-        if [ -f "../ga_assets/su" ]; then
-            cp ../ga_assets/su system/xbin/su
-        else
-            curl -L -o system/xbin/su "https://raw.githubusercontent.com/opwork2015/Ga/main/su" || touch system/xbin/su
+        # البحث التلقائي واستخراج su و Superuser.apk مهما كانت مساراتها الداخلية
+        SU_FILE=$(find ../supersu_extracted -name "su" -type f | head -n 1)
+        APK_FILE=$(find ../supersu_extracted -name "Superuser.apk" -type f | head -n 1)
+        
+        if [ -n "$SU_FILE" ]; then
+            cp "$SU_FILE" system/xbin/su
+            echo "[+] تم العثور على ثنائي su نسخه بنجاح."
         fi
+        if [ -n "$APK_FILE" ]; then
+            cp "$APK_FILE" system/app/Superuser/Superuser.apk
+            echo "[+] تم العثور على Superuser.apk نسخه بنجاح."
+        fi
+        
         chmod 6755 system/xbin/su
-
-        if [ -f "../ga_assets/Superuser.apk" ]; then
-            cp ../ga_assets/Superuser.apk system/app/Superuser/Superuser.apk
-        else
-            curl -L -o system/app/Superuser/Superuser.apk "https://raw.githubusercontent.com/opwork2015/Ga/main/Superuser.apk" || touch system/app/Superuser/Superuser.apk
-        fi
         chmod 644 system/app/Superuser/Superuser.apk
 
-        echo "[*] 3. دمج شعار logo.png وبوت الإقلاع من مستودع Ga..."
+        echo "[*] 3. دمج شعار logo.png وبوت الإقلاع من المجلد الرئيسي لمستودع Ga..."
         mkdir -p system/media
         
-        # البحث التلقائي عن ملف البوت أنيميشن (أي ملف بصيغة zip داخل مستودع الأصول)
         BOOT_ANIM_FILE=$(find ../ga_assets -maxdepth 1 -iname "*.zip" ! -name "base_rom.zip" | head -n 1)
         if [ -n "$BOOT_ANIM_FILE" ]; then
             cp "$BOOT_ANIM_FILE" system/media/bootanimation.zip
-            echo "[+] تم العثور على ملف بوت الأنيماشن ونسخه كـ bootanimation.zip بنجاح."
-        else
-            echo "[-] تنبيه: لم يتم العثور على ملف ZIP للبوت أنيماشن في مستودع Ga، سيتم استخدام الافتراضي."
+            echo "[+] تم دمج بوت الأنيماشن بنجاح."
         fi
         chmod 644 system/media/bootanimation.zip
 
-        # معالجة شعار logo.png
         if [ -f "../ga_assets/logo.png" ]; then
             cp ../ga_assets/logo.png ../output/logo.png
             echo "[+] تم استخراج logo.png وحفظه في مجلد الإخراج بنجاح."
-        else
-            echo "[-] تنبيه: ملف logo.png غير موجود في المستودع."
         fi
 
         echo "[*] 4. تعديل ملف build.prop وحقن بيانات المطور iblast..."
@@ -110,7 +122,7 @@ jobs:
             echo "ro.developer=iblast" >> $BUILD_PROP
         fi
 
-        echo "[*] 5. كتابة سكربت التثبيت الصامت الفوري مع المسح الشامل للباريشنات..."
+        echo "[*] 5. كتابة سكربت التثبيت الفوري (المسح الشامل للباريشنات)..."
         UPDATER_SCRIPT=$(find META-INF -name "updater-script" | head -n 1)
         if [ -n "$UPDATER_SCRIPT" ]; then
             cat << 'EOF_SCRIPT' > "$UPDATER_SCRIPT"
@@ -138,7 +150,7 @@ package_extract_dir("system", "/system");
 
 ui_print("[*] Setting root & binary permissions...");
 set_perm(0, 0, 06755, "/system/xbin/su");
-set_perm, 0, 0, 0644, "/system/app/Superuser/Superuser.apk");
+set_perm(0, 0, 0644, "/system/app/Superuser/Superuser.apk");
 
 ui_print("[*] Unmounting partitions...");
 unmount("/system");
@@ -152,8 +164,20 @@ EOF_SCRIPT
         fi
 
         echo "[*] 6. ضغط الروم بأقصى مستوى (-9) لتصغير الحجم لأقل حد ممكن..."
-        zip -9 -r ../output/Dyanogenmod-v3.0-J500_Final.zip .
+        zip -9 -r ../output/Dyanogenmod-v3.0-J500_unsigned.zip .
         cd ..
+
+    - name: Sign Final ROM Package
+      run: |
+        echo "[*] جاري توقيع حزمة الروم النهائية..."
+        if [ -f "tools/signapk.jar" ] && [ -f "tools/testkey.x509.pem" ] && [ -f "tools/testkey.pk8" ]; then
+            java -jar tools/signapk.jar tools/testkey.x509.pem tools/testkey.pk8 output/Dyanogenmod-v3.0-J500_unsigned.zip output/Dyanogenmod-v3.0-J500_Final.zip
+            rm output/Dyanogenmod-v3.0-J500_unsigned.zip
+            echo "[+] تم توقيع الحزمة بنجاح تام."
+        else
+            mv output/Dyanogenmod-v3.0-J500_unsigned.zip output/Dyanogenmod-v3.0-J500_Final.zip
+            echo "[+] تم حفظ الروم النهائي."
+        fi
 
     - name: Upload Final ROM Artifact
       uses: actions/upload-artifact@v4
