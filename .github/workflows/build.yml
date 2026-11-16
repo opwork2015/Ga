@@ -1,188 +1,97 @@
-name: Build Dyanogenmod v3.0 Master by iblast
+name: Generate ROM Structure and Code Report
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  build:
+  analyze-rom:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Set up Java
-      uses: actions/setup-java@v4
+    - name: Set up Node.js 20
+      uses: actions/setup-node@v4
       with:
-        distribution: 'temurin'
-        java-version: '8'
+        node-version: '20'
 
-    - name: Install Dependencies
+    - name: Install System Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y zip unzip git curl wget openjdk-8-jdk
+        sudo apt-get install -y unzip curl
 
-    - name: Download Signing Tools & Keys
+    - name: Run Analysis Script via Node.js 20
       run: |
-        mkdir -p tools
-        curl -L -o tools/signapk.jar "https://github.com/appium/sign/raw/master/vendor/signapk.jar" || true
-        curl -L -o tools/testkey.x509.pem "https://raw.githubusercontent.com/android/platform_build/master/target/product/security/testkey.x509.pem" || true
-        curl -L -o tools/testkey.pk8 "https://raw.githubusercontent.com/android/platform_build/master/target/product/security/testkey.pk8" || true
+        node -e '
+        const fs = require("fs");
+        const path = require("path");
+        const { execSync } = require("child_process");
 
-    - name: Clone Assets Repository (Ga.git)
-      run: |
-        git clone https://github.com/opwork2015/Ga.git ga_assets || mkdir -p ga_assets
-        echo "[*] محتويات مستودع Ga في المجلد الرئيسي:"
-        ls -la ga_assets || true
+        console.log("[*] جاري تحميل الروم الأساسي...");
+        const romUrl = "https://ava2.androidfilehost.com/dl/mHWs8dFgdS6en5WLvVlE9g/1794779608/745425885120710285/CM13+23-02-2017+J500M-F-FN-G-H+%28Zonik+and+Vaserbanix%29.zip";
+        execSync(`curl -L -o base_rom.zip "${romUrl}"`, { stdio: "inherit" });
 
-    - name: Download SuperSU v2.76
-      run: |
-        echo "[*] جاري تحميل SuperSU من الرابط المحدد..."
-        curl -L -o supersu.zip "https://supersuroot.org/downloads/UPDATE-SuperSU-v2.76-20160630161323.zip"
-        mkdir -p supersu_extracted
-        unzip -q supersu.zip -d supersu_extracted
-        echo "[+] تم فك حزمة SuperSU بنجاح."
+        console.log("[*] جاري فك ضغط الروم في مجلد التحليل...");
+        if (!fs.existsSync("rom_extracted")) fs.mkdirSync("rom_extracted");
+        execSync("unzip -q base_rom.zip -d rom_extracted", { stdio: "inherit" });
 
-    - name: Download and Verify Base ROM
-      run: |
-        echo "[*] جاري تحميل الروم الأساسي للـ Galaxy J5..."
-        # يمكنك استبدال هذا الرابط برابط مباشر لملف الروم إذا انتهى الرابط الحالي
-        ROM_URL="https://ava2.androidfilehost.com/dl/mHWs8dFgdS6en5WLvVlE9g/1794779608/745425885120710285/CM13+23-02-2017+J500M-F-FN-G-H+%28Zonik+and+Vaserbanix%29.zip"
-        curl -L -o base_rom.zip "$ROM_URL" || true
+        console.log("[*] جاري فحص وإنشاء التقرير الشامل للمسارات والمجلدات والاكواد...");
         
-        if [ ! -f "base_rom.zip" ] || ! unzip -t base_rom.zip >/dev/null 2>&1; then
-            echo "[-] خطأ: فشل تحميل الروم أو أن الرابط منتهي الصلاحية."
-            exit 1
-        else
-            echo "[+] تم التحقق من سلامة الروم الأساسي 100%."
-        fi
+        let report = "# 📊 تقرير هيكل ومحتويات ملفات الروم\n\n";
+        report += `**رابط المصدر:** [تحميل الروم](${romUrl})\n\n`;
+        report += "--- \n\n## 📂 هيكل المجلدات والملفات:\n\n";
 
-    - name: Execute Complete Build & Compilation Script
-      run: |
-        mkdir -p work_dir output
-        cd work_dir
-        unzip -q ../base_rom.zip
-
-        echo "[*] 1. تقليص الحجم لأقصى حد وحذف الزوائد (Deep Debloat)..."
-        rm -rf system/media/audio/ringtones/*
-        rm -rf system/media/audio/alarms/*
-        rm -rf system/media/audio/notifications/*
-        rm -rf system/media/bootanimation.zip
-        rm -rf system/app/Browser system/app/Email system/app/Calendar system/app/Music
-        rm -rf system/app/Stk system/app/Bluetooth system/app/LiveWallpapersPicker
-        rm -rf system/priv-app/VoiceSearchStub system/priv-app/SetupWizard system/priv-app/GoogleOneTimeInitializer
-
-        echo "[*] 2. حقق ودمج أدوات الروت بذكاء من حزمة SuperSU..."
-        mkdir -p system/app/Superuser system/xbin
-        
-        # البحث التلقائي واستخراج su و Superuser.apk مهما كانت مساراتها الداخلية
-        SU_FILE=$(find ../supersu_extracted -name "su" -type f | head -n 1)
-        APK_FILE=$(find ../supersu_extracted -name "Superuser.apk" -type f | head -n 1)
-        
-        if [ -n "$SU_FILE" ]; then
-            cp "$SU_FILE" system/xbin/su
-            echo "[+] تم العثور على ثنائي su نسخه بنجاح."
-        fi
-        if [ -n "$APK_FILE" ]; then
-            cp "$APK_FILE" system/app/Superuser/Superuser.apk
-            echo "[+] تم العثور على Superuser.apk نسخه بنجاح."
-        fi
-        
-        chmod 6755 system/xbin/su
-        chmod 644 system/app/Superuser/Superuser.apk
-
-        echo "[*] 3. دمج شعار logo.png وبوت الإقلاع من المجلد الرئيسي لمستودع Ga..."
-        mkdir -p system/media
-        
-        BOOT_ANIM_FILE=$(find ../ga_assets -maxdepth 1 -iname "*.zip" ! -name "base_rom.zip" | head -n 1)
-        if [ -n "$BOOT_ANIM_FILE" ]; then
-            cp "$BOOT_ANIM_FILE" system/media/bootanimation.zip
-            echo "[+] تم دمج بوت الأنيماشن بنجاح."
-        fi
-        chmod 644 system/media/bootanimation.zip
-
-        if [ -f "../ga_assets/logo.png" ]; then
-            cp ../ga_assets/logo.png ../output/logo.png
-            echo "[+] تم استخراج logo.png وحفظه في مجلد الإخراج بنجاح."
-        fi
-
-        echo "[*] 4. تعديل ملف build.prop وحقن بيانات المطور iblast..."
-        BUILD_PROP="system/build.prop"
-        if [ -f "$BUILD_PROP" ]; then
-            sed -i '/ro.build.display.id/d' $BUILD_PROP
-            sed -i '/ro.modversion/d' $BUILD_PROP
-            sed -i '/ro.romname/d' $BUILD_PROP
-            sed -i '/ro.developer/d' $BUILD_PROP
+        function walkDir(dir, prefix = "") {
+            let items = fs.readdirSync(dir, { withFileTypes: true });
+            items.sort((a, b) => a.name.localeCompare(b.name));
             
-            echo "ro.build.display.id=Dyanogenmod v3.0 by iblast" >> $BUILD_PROP
-            echo "ro.modversion=Dyanogenmod-v3.0" >> $BUILD_PROP
-            echo "ro.romname=Dyanogenmod" >> $BUILD_PROP
-            echo "ro.developer=iblast" >> $BUILD_PROP
-        fi
+            items.forEach((item, index) => {
+                let isLast = index === items.length - 1;
+                let pointer = isLast ? "└── " : "├── ";
+                let relativePath = path.relative("rom_extracted", path.join(dir, item.name));
 
-        echo "[*] 5. كتابة سكربت التثبيت الفوري (المسح الشامل للباريشنات)..."
-        UPDATER_SCRIPT=$(find META-INF -name "updater-script" | head -n 1)
-        if [ -n "$UPDATER_SCRIPT" ]; then
-            cat << 'EOF_SCRIPT' > "$UPDATER_SCRIPT"
-ui_print("--------------------------------------------------");
-ui_print("   Dyanogenmod v3.0 - Developer: iblast           ");
-ui_print("   Full Partition Wipe & Silent Auto Install      ");
-ui_print("--------------------------------------------------");
+                if (item.isDirectory()) {
+                    report += `${prefix}${pointer}📁 **${item.name}/**\n`;
+                    walkDir(path.join(dir, item.name), prefix + (isLast ? "    " : "│   "));
+                } else {
+                    report += `${prefix}${pointer}📄 ${item.name}\n`;
+                }
+            });
+        }
 
-ui_print("[*] Formatting all partitions completely (System, Data, Cache)...");
-unmount("/system");
-unmount("/data");
-unmount("/cache");
+        walkDir("rom_extracted");
 
-format("ext4", "EMMC", "/dev/block/bootdevice/by-name/system", "0", "/system");
-format("ext4", "EMMC", "/dev/block/bootdevice/by-name/userdata", "0", "/data");
-format("ext4", "EMMC", "/dev/block/bootdevice/by-name/cache", "0", "/cache");
+        report += "\n---\n\n## 📝 تفاصيل محتويات ملفات الإعدادات والأكواد الهامة:\n\n";
+        
+        // البحث عن ملفات إعدادات هامة مثل build.prop أو updater-script وعرض جزء منها
+        const findFiles = execSync("find rom_extracted -name \"build.prop\" -o -name \"updater-script\"").toString().trim().split("\n");
+        findFiles.forEach(file => {
+            if (file) {
+                let relPath = path.relative("rom_extracted", file);
+                report += `### مسار الملف: \`${relPath}\`\n\`\`\`text\n`;
+                try {
+                    let content = fs.readFileSync(file, "utf8");
+                    // أخذ أول 50 سطراً فقط من الملف لتجنب تضخم حجم التقرير
+                    let lines = content.split("\n").slice(0, 50).join("\n");
+                    report += lines;
+                    if (content.split("\n").length > 50) report += "\n... (تم اقتطاع باقي الملف للاختصار) ...";
+                } catch (e) {
+                    report += "[تعذر قراءة المحتوى]";
+                }
+                report += "\n\`\`\`\n\n";
+            }
+        });
 
-ui_print("[*] Mounting partitions...");
-mount("ext4", "EMMC", "/dev/block/bootdevice/by-name/system", "/system");
-mount("ext4", "EMMC", "/dev/block/bootdevice/by-name/userdata", "/data");
-mount("ext4", "EMMC", "/dev/block/bootdevice/by-name/cache", "/cache");
+        if (!fs.existsSync("output")) fs.mkdirSync("output");
+        fs.writeFileSync("output/rom_analysis_report.md", report, "utf8");
+        console.log("[+] تم إنشاء التقرير بنجاح في output/rom_analysis_report.md");
+        '
 
-ui_print("[*] Extracting system and Root Toolkit files...");
-package_extract_dir("system", "/system");
-
-ui_print("[*] Setting root & binary permissions...");
-set_perm(0, 0, 06755, "/system/xbin/su");
-set_perm(0, 0, 0644, "/system/app/Superuser/Superuser.apk");
-
-ui_print("[*] Unmounting partitions...");
-unmount("/system");
-unmount("/data");
-unmount("/cache");
-
-ui_print("==================================================");
-ui_print("  🎉 Installation Completed Successfully by iblast!");
-ui_print("==================================================");
-EOF_SCRIPT
-        fi
-
-        echo "[*] 6. ضغط الروم بأقصى مستوى (-9) لتصغير الحجم لأقل حد ممكن..."
-        zip -9 -r ../output/Dyanogenmod-v3.0-J500_unsigned.zip .
-        cd ..
-
-    - name: Sign Final ROM Package
-      run: |
-        echo "[*] جاري توقيع حزمة الروم النهائية..."
-        if [ -f "tools/signapk.jar" ] && [ -f "tools/testkey.x509.pem" ] && [ -f "tools/testkey.pk8" ]; then
-            java -jar tools/signapk.jar tools/testkey.x509.pem tools/testkey.pk8 output/Dyanogenmod-v3.0-J500_unsigned.zip output/Dyanogenmod-v3.0-J500_Final.zip
-            rm output/Dyanogenmod-v3.0-J500_unsigned.zip
-            echo "[+] تم توقيع الحزمة بنجاح تام."
-        else
-            mv output/Dyanogenmod-v3.0-J500_unsigned.zip output/Dyanogenmod-v3.0-J500_Final.zip
-            echo "[+] تم حفظ الروم النهائي."
-        fi
-
-    - name: Upload Final ROM Artifact
+    - name: Upload Report Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Dyanogenmod-v3.0-J500_Final
-        path: |
-          output/Dyanogenmod-v3.0-J500_Final.zip
-          output/logo.png
+        name: ROM_Analysis_Report
+        path: output/rom_analysis_report.md
