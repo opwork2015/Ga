@@ -6,7 +6,7 @@ on:
       rom_url:
         description: 'ضع هنا رابط تحميل ملف الـ ZIP للروم مباشرة:'
         required: true
-        default: 'https://github.com/opwork2015/Ga/releases/download/v1.0/base_rom.zip'
+        default: 'https://github.com/opwork2015/Ga/raw/main/base_rom.zip'
 
 jobs:
   inspect-rom:
@@ -21,12 +21,12 @@ jobs:
       with:
         node-version: '20'
 
-    - name: Install System Dependencies
+    - name: Install Advanced Ubuntu Compression Tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y unzip curl
+        sudo apt-get install -y unzip p7zip-full p7zip-rar curl wget
 
-    - name: Run ROM Inspection Script
+    - name: Run Robust ROM Inspection Script
       run: |
         node -e '
         const fs = require("fs");
@@ -36,28 +36,51 @@ jobs:
         const romUrl = "${{ github.event.inputs.rom_url }}";
         console.log(`[*] جاري تحميل الروم من الرابط: ${romUrl}`);
         
+        // التحميل مع متابعة إعادة التوجيه واستخدام UA متصفح حقيقي
         try {
-            execSync(`curl -L -o base_rom.zip "${romUrl}"`, { stdio: "inherit" });
+            execSync(`curl -L -A "Mozilla/5.0" -o base_rom.zip "${romUrl}"`, { stdio: "inherit" });
         } catch (e) {
-            console.error("[-] فشل تحميل الملف من الرابط.");
+            console.error("[-] فشل التحميل عبر الـ curl.");
             process.exit(1);
         }
 
-        if (!fs.existsSync("base_rom.zip") || fs.statSync("base_rom.zip").size < 1000) {
-            console.error("[-] خطأ: الملف المحمل تالف أو غير موجود.");
+        // التأكد من أن الملف المحمل ليس صفحة HTML بل ملف مضغوط حقيقي
+        const stats = fs.statSync("base_rom.zip");
+        console.log(`[*] حجم الملف المحمل: ${stats.size} بايت`);
+        
+        if (stats.size < 1000000) {
+            console.error("[-] خطأ: الملف المحمل صغير جداً أو عبارة عن صفحة خطأ/تحويل (HTML). يرجى التأكد من أن الرابط مباشر تماماً.");
+            // طباعة عينة من المحتوى لمعرفة الخطأ
+            const contentSample = fs.readFileSync("base_rom.zip", "utf8").substring(0, 200);
+            console.error("محتوى الملف المحمل:\n" + contentSample);
             process.exit(1);
         }
 
         if (!fs.existsSync("rom_extracted")) fs.mkdirSync("rom_extracted");
-        console.log("[*] جاري فك ضغط الروم...");
+        
+        console.log("[*] جاري فك ضغط الروم باستخدام أدوات أوبونتو القوية (7z / unzip)...");
+        let extractedOk = false;
+        
         try {
-            execSync("unzip -q base_rom.zip -d rom_extracted", { stdio: "inherit" });
+            // محاولة الفك بـ 7z (تدعم كافة أنواع الضغط المضغوطة للرومات)
+            execSync("7z x base_rom.zip -orom_extracted -y", { stdio: "inherit" });
+            extractedOk = true;
         } catch (e) {
-            console.error("[-] خطأ في فك ضغط ملف الـ ZIP.");
+            console.log("[*] فشل 7z، جاري المحاولة باستخدام أداة unzip الكلاسيكية...");
+            try {
+                execSync("unzip -q base_rom.zip -d rom_extracted", { stdio: "inherit" });
+                extractedOk = true;
+            } catch (err) {
+                console.error("[-] فشل فك الضغط بجميع الأدوات.");
+            }
+        }
+
+        if (!extractedOk) {
+            console.error("[-] خطأ: تعذر فك ضغط ملف الروم.");
             process.exit(1);
         }
 
-        console.log("[*] جاري استخراج مسارات الملفات، التوقيعات، و الملفات المطلوبة...");
+        console.log("[*] جاري إنشاء التقرير الشامل لمسارات الملفات، التوقيعات، و الملفات المطلوبة...");
         
         let report = "# 🔍 تقرير فحص ومسارات الروم الشامل\n\n";
         report += `**رابط الروم:** \`${romUrl}\`\n\n`;
@@ -85,7 +108,7 @@ jobs:
         report += allFiles.join("\n");
         report += "\n```\n\n---\n\n";
 
-        // 2. البحث عن التوقيعات والشهادات
+        // 2. التوقيعات وشهادات الأمان
         report += "## 🔐 التوقيعات وشهادات الأمان (META-INF):\n\n";
         const sigFiles = allFiles.filter(f => f.startsWith("META-INF/") || f.endsWith(".RSA") || f.endsWith(".SF") || f.endsWith(".MF"));
         if (sigFiles.length > 0) {
@@ -111,13 +134,13 @@ jobs:
         if (updaterCmd && fs.existsSync(updaterCmd)) {
             report += fs.readFileSync(updaterCmd, "utf8");
         } else {
-            report += "ملف updater-script غير موجود (قد يكون روم يعتمد على edify مختلف أو تحديث حديث).\n";
+            report += "ملف updater-script غير موجود.\n";
         }
         report += "\n```\n";
 
         if (!fs.existsSync("output")) fs.mkdirSync("output");
         fs.writeFileSync("output/rom_detailed_report.md", report, "utf8");
-        console.log("[+] تم إنشاء التقرير المفصل بنجاح.");
+        console.log("[+] تم إنشاء التقرير المفصل بنجاح في output/rom_detailed_report.md");
         '
 
     - name: Upload Detailed ROM Report
