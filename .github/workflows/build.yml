@@ -1,12 +1,15 @@
-name: Generate ROM Structure and Code Report
+name: ROM Structure Inspector & Report Generator
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      rom_url:
+        description: 'ضع هنا رابط تحميل ملف الـ ZIP للروم مباشرة:'
+        required: true
+        default: 'https://ava2.androidfilehost.com/dl/mHWs8dFgdS6en5WLvVlE9g/1794779608/745425885120710285/CM13+23-02-2017+J500M-F-FN-G-H+%28Zonik+and+Vaserbanix%29.zip'
 
 jobs:
-  analyze-rom:
+  inspect-rom:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,75 +26,84 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y unzip curl
 
-    - name: Run Analysis Script via Node.js 20
+    - name: Run ROM Structure Analysis Script
       run: |
         node -e '
         const fs = require("fs");
         const path = require("path");
         const { execSync } = require("child_process");
 
-        console.log("[*] جاري تحميل الروم الأساسي...");
-        const romUrl = "https://ava2.androidfilehost.com/dl/mHWs8dFgdS6en5WLvVlE9g/1794779608/745425885120710285/CM13+23-02-2017+J500M-F-FN-G-H+%28Zonik+and+Vaserbanix%29.zip";
+        const romUrl = "${{ github.event.inputs.rom_url }}";
+        console.log(`[*] جاري تحميل الروم من الرابط: ${romUrl}`);
+        
         execSync(`curl -L -o base_rom.zip "${romUrl}"`, { stdio: "inherit" });
 
-        console.log("[*] جاري فك ضغط الروم في مجلد التحليل...");
         if (!fs.existsSync("rom_extracted")) fs.mkdirSync("rom_extracted");
+        console.log("[*] جاري فك ضغط الروم للتحليل والهندسة العكسية للمسارات...");
         execSync("unzip -q base_rom.zip -d rom_extracted", { stdio: "inherit" });
 
-        console.log("[*] جاري فحص وإنشاء التقرير الشامل للمسارات والمجلدات والاكواد...");
-        
-        let report = "# 📊 تقرير هيكل ومحتويات ملفات الروم\n\n";
-        report += `**رابط المصدر:** [تحميل الروم](${romUrl})\n\n`;
-        report += "--- \n\n## 📂 هيكل المجلدات والملفات:\n\n";
+        console.log("[*] جاري بناء تقرير هيكل الملفات والمجلدات...");
+        let report = "# 📋 تقرير هيكل ومسارات ومجلدات الروم الشامل\n\n";
+        report += `**رابط الروم المفحوص:** \`${romUrl}\`\n\n`;
+        report += "---\n\n## 📂 الشجرة الكاملة للمجلدات والملفات:\n\n```text\n";
 
-        function walkDir(dir, prefix = "") {
-            let items = fs.readdirSync(dir, { withFileTypes: true });
-            items.sort((a, b) => a.name.localeCompare(b.name));
-            
-            items.forEach((item, index) => {
-                let isLast = index === items.length - 1;
-                let pointer = isLast ? "└── " : "├── ";
-                let relativePath = path.relative("rom_extracted", path.join(dir, item.name));
-
-                if (item.isDirectory()) {
-                    report += `${prefix}${pointer}📁 **${item.name}/**\n`;
-                    walkDir(path.join(dir, item.name), prefix + (isLast ? "    " : "│   "));
-                } else {
-                    report += `${prefix}${pointer}📄 ${item.name}\n`;
-                }
-            });
+        function getTree(dir, prefix = "") {
+            let result = "";
+            try {
+                let items = fs.readdirSync(dir, { withFileTypes: true });
+                items.sort((a, b) => a.name.localeCompare(b.name));
+                items.forEach((item, index) => {
+                    let isLast = index === items.length - 1;
+                    let pointer = isLast ? "└── " : "├── ";
+                    let connector = isLast ? "    " : "│   ";
+                    if (item.isDirectory()) {
+                        result += `${prefix}${pointer}[DIR] ${item.name}/\n`;
+                        result += getTree(path.join(dir, item.name), prefix + connector);
+                    } else {
+                        result += `${prefix}${pointer}${item.name}\n`;
+                    }
+                });
+            } catch (e) {
+                result += `${prefix}[تعذر القراءة]\n`;
+            }
+            return result;
         }
 
-        walkDir("rom_extracted");
+        report += getTree("rom_extracted");
+        report += "```\n\n---\n\n## 📱 كشف تفصيلي بجميع ملفات التطبيقات (APK) والسكربتات (SH) داخل الروم:\n\n";
 
-        report += "\n---\n\n## 📝 تفاصيل محتويات ملفات الإعدادات والأكواد الهامة:\n\n";
-        
-        // البحث عن ملفات إعدادات هامة مثل build.prop أو updater-script وعرض جزء منها
-        const findFiles = execSync("find rom_extracted -name \"build.prop\" -o -name \"updater-script\"").toString().trim().split("\n");
-        findFiles.forEach(file => {
-            if (file) {
-                let relPath = path.relative("rom_extracted", file);
-                report += `### مسار الملف: \`${relPath}\`\n\`\`\`text\n`;
-                try {
-                    let content = fs.readFileSync(file, "utf8");
-                    // أخذ أول 50 سطراً فقط من الملف لتجنب تضخم حجم التقرير
-                    let lines = content.split("\n").slice(0, 50).join("\n");
-                    report += lines;
-                    if (content.split("\n").length > 50) report += "\n... (تم اقتطاع باقي الملف للاختصار) ...";
-                } catch (e) {
-                    report += "[تعذر قراءة المحتوى]";
+        function findSpecialFiles(dir) {
+            let list = [];
+            try {
+                let items = fs.readdirSync(dir, { withFileTypes: true });
+                for (let item of items) {
+                    let fullPath = path.join(dir, item.name);
+                    if (item.isDirectory()) {
+                        list = list.concat(findSpecialFiles(fullPath));
+                    } else {
+                        let ext = path.extname(item.name).toLowerCase();
+                        if (ext === ".apk" || ext === ".sh") {
+                            list.push(path.relative("rom_extracted", fullPath));
+                        }
+                    }
                 }
-                report += "\n\`\`\`\n\n";
-            }
+            } catch (e) {}
+            return list;
+        }
+
+        const specialFiles = findSpecialFiles("rom_extracted");
+        report += `إجمالي عدد الملفات المكتشفة (APK / SH): **${specialFiles.length}**\n\n`;
+        specialFiles.forEach((file, idx) => {
+            report += `${idx + 1}. \`${file}\`\n`;
         });
 
         if (!fs.existsSync("output")) fs.mkdirSync("output");
-        fs.writeFileSync("output/rom_analysis_report.md", report, "utf8");
-        console.log("[+] تم إنشاء التقرير بنجاح في output/rom_analysis_report.md");
+        fs.writeFileSync("output/rom_structure_report.md", report, "utf8");
+        console.log("[+] تم إنشاء التقرير بنجاح في output/rom_structure_report.md");
         '
 
-    - name: Upload Report Artifact
+    - name: Upload ROM Structure Report Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ROM_Analysis_Report
-        path: output/rom_analysis_report.md
+        name: ROM_Structure_Report
+        path: output/rom_structure_report.md
